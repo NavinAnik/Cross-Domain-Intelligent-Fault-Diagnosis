@@ -1,1 +1,73 @@
-\venv
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.venv/
+ENV/
+
+# Environment variable files
+.env
+*.env
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# PyInstaller
+*.spec
+
+# VS Code settings
+.vscode/
+
+# macOS & Linux system files
+.DS_Store
+*.swp
+*~
+
+# Python egg metadata
+*.egg-info/
+dist/
+build/
+
+# Logs and debug
+*.log
+logs/
+
+# Models & checkpoints
+*.h5
+*.ckpt
+*.pb
+checkpoints/
+models/
+saved_model/
+
+# TensorBoard logs
+logs/
+tensorboard_logs/
+
+# Training history plots, evaluation artifacts
+*.png
+*.jpg
+plots/
+
+# Data files
+*.csv
+*.tsv
+*.zip
+*.tar.gz
+data/
+datasets/
+
+# __pycache__ in any subdirectory
+**/__pycache__/
+
+# MyPy type check
+.mypy_cache/
+
+# Compiled extensions
+*.so
+model/
+results/
