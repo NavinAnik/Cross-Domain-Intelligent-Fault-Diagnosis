@@ -2,10 +2,13 @@ import os
 from dotenv import load_dotenv
 import tensorflow as tf
 import numpy as np
+import matplotlib.pyplot as plt
 
 from models.encoder_factory import get_encoder
 from models.projection_head import get_projection_head
 from utils.augmentations import get_augmentation_pipeline
+import mplcyberpunk as cyberpunk
+plt.style.use("cyberpunk")
 
 load_dotenv("config.env")
 
@@ -15,6 +18,18 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE"))
 EPOCHS = int(os.getenv("EPOCHS"))
 TEMPERATURE = float(os.getenv("TEMPERATURE"))
 INPUT_SHAPE = (28, 28, 1)
+loss_history = []
+
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"{len(gpus)} GPU(s) detected and memory growth set.")
+    except RuntimeError as e:
+        print(e)
+else:
+    print("No GPU detected. Training will use CPU.")
 
 (x_train, _), _ = tf.keras.datasets.mnist.load_data()
 x_train = x_train.astype("float32") / 255.0
@@ -47,8 +62,23 @@ def train_step(images):
     return loss
 
 for epoch in range(EPOCHS):
+    epoch_loss = []
     for batch in dataset:
         loss = train_step(batch)
+        epoch_loss.append(loss.numpy())
+    avg_loss = np.mean(epoch_loss)
+    loss_history.append(avg_loss)
     print(f"Epoch {epoch + 1}, Loss: {loss.numpy():.4f}")
 
-base_encoder.save("base_encoder.h5")
+base_encoder.save("/model/base_encoder.h5")
+
+plt.figure(figsize=(8, 5))
+plt.plot(range(1, EPOCHS + 1), loss_history, marker='o', label='Training Loss')
+plt.title("Training Loss over Epochs")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.savefig("/results/training_loss.png")  # Saves the plot as an image
+plt.show()
