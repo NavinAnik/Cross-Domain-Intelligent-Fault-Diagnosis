@@ -1,5 +1,5 @@
 @echo off
-SET VENV_DIR=venev
+SET VENV_DIR=venv
 
 REM Check if virtual environment exists
 IF NOT EXIST "%VENV_DIR%\Scripts\activate.bat" (
