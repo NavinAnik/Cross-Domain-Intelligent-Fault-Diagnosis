@@ -7,7 +7,7 @@ from modules.data_loader import get_dataloaders
 from modules.encoder import Encoder
 from modules.classifier import ClassificationModel
 from utils.plot_graph import plot_graph
-
+from evaluate_models import evaluate
 # Load environment variables
 load_dotenv("configs/.env")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -24,7 +24,7 @@ train_loader, val_loader = get_dataloaders(dataset_path, batch_size)
 
 # Setup model
 encoder = Encoder()
-encoder.load_state_dict(torch.load("encoder_pretrained.pth"))
+encoder.load_state_dict(torch.load("./model/encoder_pretrained.pth"))
 model = ClassificationModel(encoder, encoder.feature_dim).to(device)
 
 criterion = nn.CrossEntropyLoss()
@@ -88,6 +88,7 @@ for epoch in range(epochs):
     val_acc = calculate_accuracy(torch.tensor(y_true_val), torch.tensor(y_pred_val))
     val_losses.append(avg_val_loss)
     val_accuracies.append(val_acc)
+    evaluate(torch.tensor(y_true_val), torch.tensor(y_pred_val), epoch + 1, "results")
 
     print(f"Epoch {epoch+1}/{epochs}")
     print(f"  Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.4f}")
