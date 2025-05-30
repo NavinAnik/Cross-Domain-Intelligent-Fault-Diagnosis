@@ -10,7 +10,13 @@ from utils.plot_graph import plot_graph
 from evaluate_models import evaluate
 # Load environment variables
 load_dotenv("configs/.env")
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
 print(f"Using device: {device}")
 
 # Load training config
