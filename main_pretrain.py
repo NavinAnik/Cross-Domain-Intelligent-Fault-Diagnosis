@@ -25,7 +25,15 @@ num_classes = int(os.getenv("NUM_CLASSES"))
 train_loader, val_loader = get_dataloaders(dataset_path, batch_size)
 
 # Encoder + contrastive projector
-encoder = Encoder().to(device)
+encoder = Encoder(
+    img_size=224,
+    patch_size=16,
+    emb_dim=768,
+    num_layers=12,
+    num_heads=12,
+    mlp_dim=3072,
+    dropout=0.1
+).to(device)
 projector = torch.nn.Linear(encoder.feature_dim, 128).to(device)
 optimizer = optim.Adam(list(encoder.parameters()) + list(projector.parameters()), lr=lr)
 
