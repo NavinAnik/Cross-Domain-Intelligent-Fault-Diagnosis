@@ -30,7 +30,7 @@ train_loader, val_loader = get_dataloaders(dataset_path, batch_size)
 
 # Setup model
 encoder = Encoder()
-encoder.load_state_dict(torch.load("./model/encoder_pretrained.pth"))
+encoder.load_state_dict(torch.load("model/encoder_pretrained.pth"))
 model = ClassificationModel(encoder, encoder.feature_dim).to(device)
 
 criterion = nn.CrossEntropyLoss()
@@ -101,8 +101,8 @@ for epoch in range(epochs):
     print(f"  Val   Loss: {avg_val_loss:.4f}, Val   Acc: {val_acc:.4f}")
 
     # Save checkpoints
-    torch.save(model.state_dict(), f"/model/model_epoch_{epoch + 1}.pth")
-    torch.save(encoder.state_dict(), f"/model/encoder_epoch_{epoch + 1}.pth")
+    torch.save(model.state_dict(), f"model/model_epoch_{epoch + 1}.pth")
+    torch.save(encoder.state_dict(), f"model/encoder_epoch_{epoch + 1}.pth")
 
 # --- Plotting ---
 epochs_range = list(range(1, epochs + 1))
