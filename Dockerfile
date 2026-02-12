@@ -25,6 +25,7 @@ COPY ./src /app
 
 # Install Python dependencies inside the venv
 RUN pip install -r requirements.txt
+RUN pip install torch==2.7.0+cu118 torchvision==0.22.0+cu118 torchaudio==2.7.0+cu118 --index-url https://download.pytorch.org/whl/cu118
 
 # Default command
 CMD ["python", "train.py"]

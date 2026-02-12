@@ -1,6 +1,9 @@
+import os
 import matplotlib.pyplot as plt
 
-def plot_graph(x, y, title, xlabel, ylabel, filename, labels=None):
+
+def plot_graph(x, y, title, xlabel, ylabel, filename, labels=None, output_dir="results"):
+    """Plot and save a graph. Use output_dir to save per-model (e.g. results/dinov2)."""
     plt.figure(figsize=(10, 6))
 
     # Check if y contains multiple series
@@ -19,9 +22,6 @@ def plot_graph(x, y, title, xlabel, ylabel, filename, labels=None):
     if labels:
         plt.legend()
 
-    # Ensure the /results directory exists
-    import os
-    os.makedirs("results", exist_ok=True)
-
-    plt.savefig(f"results/{filename}", dpi=300, bbox_inches='tight')
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight')
     plt.close()

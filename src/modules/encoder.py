@@ -36,9 +36,9 @@ class TransformerEncoder(nn.Module):
         return self.transformer(x)
 
 class Encoder(nn.Module):
-    def __init__(self, img_size=224, patch_size=16, emb_dim=768, num_layers=12, num_heads=12, mlp_dim=3072, dropout=0.1):
+    def __init__(self, in_channels=3, img_size=224, patch_size=16, emb_dim=768, num_layers=12, num_heads=12, mlp_dim=3072, dropout=0.1):
         super().__init__()
-        self.patch_embed = PatchEmbedding(in_channels=3, patch_size=patch_size, emb_dim=emb_dim, img_size=img_size)
+        self.patch_embed = PatchEmbedding(in_channels=in_channels, patch_size=patch_size, emb_dim=emb_dim, img_size=img_size)
         self.transformer = TransformerEncoder(
             emb_dim=emb_dim,
             num_heads=num_heads,

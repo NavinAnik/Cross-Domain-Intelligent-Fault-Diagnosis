@@ -17,6 +17,28 @@ from sklearn.metrics import (
 )
 import matplotlib.pyplot as plt
 
+try:
+    from training.optimization import (
+        enable_gradient_checkpointing,
+        autocast_context,
+        TrainingStepHelper,
+    )
+    _HAS_OPTIMIZATION = True
+except ImportError:
+    _HAS_OPTIMIZATION = False
+
+try:
+    from utils.experiment_tracking import init_wandb, log_metrics, finish_wandb
+    _HAS_WANDB = True
+except ImportError:
+    _HAS_WANDB = False
+    def init_wandb(*args, **kwargs):
+        return False
+    def log_metrics(*args, **kwargs):
+        pass
+    def finish_wandb():
+        pass
+
 # ----------- Config ------------
 SAMPLE_RATE = 16000
 N_MELS = 64
@@ -26,7 +48,13 @@ EPOCHS = 30
 LEARNING_RATE = 1e-3
 TEMPERATURE = 0.5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Memory optimization (used when training.optimization is available)
+USE_AMP = os.environ.get("USE_AMP", "true").lower() == "true" and DEVICE.type == "cuda"
+GRADIENT_ACCUMULATION_STEPS = max(1, int(os.environ.get("GRADIENT_ACCUMULATION_STEPS", "1")))
+USE_GRADIENT_CHECKPOINTING = os.environ.get("USE_GRADIENT_CHECKPOINTING", "false").lower() == "true"
 print(f"Using device: {DEVICE}")
+if _HAS_OPTIMIZATION:
+    print(f"Optimization: USE_AMP={USE_AMP}, GRADIENT_ACCUMULATION_STEPS={GRADIENT_ACCUMULATION_STEPS}, USE_GRADIENT_CHECKPOINTING={USE_GRADIENT_CHECKPOINTING}")
 SEED = 42
 # ------------------------------
 
@@ -302,6 +330,26 @@ class AudioAugmentation:
 
 # -------- Training loop with validation evaluation -------- #
 def train_contrastive_with_eval(train_root, val_root):
+    # Experiment tracking (Weights & Biases)
+    if _HAS_WANDB:
+        init_wandb(
+            project="mimii-anomaly-detection",
+            config={
+                "model": "contrastive_transformer",
+                "train_root": train_root,
+                "val_root": val_root,
+                "batch_size": BATCH_SIZE,
+                "epochs": EPOCHS,
+                "learning_rate": LEARNING_RATE,
+                "temperature": TEMPERATURE,
+                "use_amp": USE_AMP,
+                "gradient_accumulation_steps": GRADIENT_ACCUMULATION_STEPS,
+                "use_gradient_checkpointing": USE_GRADIENT_CHECKPOINTING,
+                "seed": SEED,
+            },
+            name="contrastive-mimii",
+        )
+
     train_dataset = ContrastiveMIMIIDataset(train_root, augment=True)
     val_dataset = ValMIMIIDataset(val_root)
 
@@ -310,9 +358,21 @@ def train_contrastive_with_eval(train_root, val_root):
 
     encoder = TransformerEncoder(input_dim=N_MELS).to(DEVICE)
     projector = ProjectionHead().to(DEVICE)
+    if _HAS_OPTIMIZATION and USE_GRADIENT_CHECKPOINTING:
+        enable_gradient_checkpointing(encoder)
 
     optimizer = torch.optim.Adam(
         list(encoder.parameters()) + list(projector.parameters()), lr=LEARNING_RATE
+    )
+    step_helper = (
+        TrainingStepHelper(
+            optimizer,
+            use_amp=USE_AMP,
+            device=DEVICE,
+            accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
+        )
+        if _HAS_OPTIMIZATION
+        else None
     )
 
     train_losses = []
@@ -324,21 +384,31 @@ def train_contrastive_with_eval(train_root, val_root):
         encoder.train()
         projector.train()
         total_loss = 0
+        if step_helper:
+            step_helper.zero_grad()
+            step_helper.reset_step_count()
 
         for x1, x2 in train_loader:
             x1, x2 = x1.to(DEVICE), x2.to(DEVICE)
 
-            z1 = projector(encoder(x1))
-            z2 = projector(encoder(x2))
-
-            loss = nt_xent_loss(z1, z2, temperature=TEMPERATURE)
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if step_helper and USE_AMP:
+                with autocast_context(USE_AMP, DEVICE):
+                    z1 = projector(encoder(x1))
+                    z2 = projector(encoder(x2))
+                    loss = nt_xent_loss(z1, z2, temperature=TEMPERATURE)
+                step_helper.step(loss)
+            else:
+                z1 = projector(encoder(x1))
+                z2 = projector(encoder(x2))
+                loss = nt_xent_loss(z1, z2, temperature=TEMPERATURE)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
             total_loss += loss.item() * x1.size(0)
             print(f"[Epoch {epoch}] Processed {len(train_loader.dataset)} samples, Loss: {loss.item():.4f}")
+        if step_helper:
+            step_helper.finalize_step()
 
         avg_train_loss = total_loss / len(train_loader.dataset)
         train_losses.append(avg_train_loss)
@@ -347,8 +417,14 @@ def train_contrastive_with_eval(train_root, val_root):
 
         # Evaluate on validation set embeddings to get some metric
         auc_score, max_f1 = evaluate(encoder, val_loader)
+        log_metrics({
+            "train_loss": avg_train_loss,
+            "val_auc": auc_score,
+            "val_max_f1": max_f1,
+        }, step=epoch)
 
     plot_train_val_curves(train_losses, val_losses)
+    finish_wandb()
 
 
 if __name__ == "__main__":

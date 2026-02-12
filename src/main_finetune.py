@@ -3,11 +3,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from dotenv import load_dotenv
-from modules.data_loader import get_dataloaders
+from modules.data_loader import get_audio_dataloaders
 from modules.encoder import Encoder
 from modules.classifier import ClassificationModel
 from utils.plot_graph import plot_graph
+from utils.experiment_tracking import init_wandb, log_metrics, finish_wandb
 from evaluate_models import evaluate
+from training.optimization import (
+    enable_gradient_checkpointing,
+    autocast_context,
+    TrainingStepHelper,
+)
+
 # Load environment variables
 load_dotenv("configs/.env")
 if torch.cuda.is_available():
@@ -24,17 +31,40 @@ dataset_path = os.getenv("DATASET_PATH")
 batch_size = int(os.getenv("BATCH_SIZE"))
 epochs = int(os.getenv("EPOCHS"))
 lr = float(os.getenv("LEARNING_RATE"))
+# Memory optimization
+use_amp = os.getenv("USE_AMP", "true").lower() == "true" and device.type == "cuda"
+accumulation_steps = max(1, int(os.getenv("GRADIENT_ACCUMULATION_STEPS", "1")))
+use_gradient_checkpointing = os.getenv("USE_GRADIENT_CHECKPOINTING", "false").lower() == "true"
+print(f"USE_AMP: {use_amp}, GRADIENT_ACCUMULATION_STEPS: {accumulation_steps}, USE_GRADIENT_CHECKPOINTING: {use_gradient_checkpointing}")
+
+# Experiment tracking (Weights & Biases)
+wandb_config = {
+    "model": "finetune_classifier",
+    "dataset_path": dataset_path,
+    "batch_size": batch_size,
+    "epochs": epochs,
+    "learning_rate": lr,
+    "use_amp": use_amp,
+    "gradient_accumulation_steps": accumulation_steps,
+    "use_gradient_checkpointing": use_gradient_checkpointing,
+}
+init_wandb(project="mimii-anomaly-detection", config=wandb_config, name="finetune-classifier")
 
 # Get train and val loaders
-train_loader, val_loader = get_dataloaders(dataset_path, batch_size)
+train_loader, val_loader = get_audio_dataloaders(dataset_path, batch_size)
 
 # Setup model
-encoder = Encoder()
+encoder = Encoder(in_channels=1, img_size=128, patch_size=16, emb_dim=768)
 encoder.load_state_dict(torch.load("model/encoder_pretrained.pth"))
 model = ClassificationModel(encoder, encoder.feature_dim).to(device)
+if use_gradient_checkpointing:
+    enable_gradient_checkpointing(model)
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.classifier.parameters(), lr=lr)
+step_helper = TrainingStepHelper(
+    optimizer, use_amp=use_amp, device=device, accumulation_steps=accumulation_steps
+)
 
 # For plotting
 train_losses = []
@@ -47,27 +77,29 @@ def calculate_accuracy(y_true, y_pred):
     return correct / len(y_true)
 
 for epoch in range(epochs):
-    # --- Training ---
+    # --- Training (with optional AMP + gradient accumulation) ---
     model.train()
     train_loss = 0
     y_true_train, y_pred_train = [], []
     processed_images = 0
+    step_helper.zero_grad()
+    step_helper.reset_step_count()
 
     for x, y in train_loader:
         x, y = x.to(device), y.to(device)
-        logits = model(x)
-        loss = criterion(logits, y)
+        with autocast_context(use_amp, device):
+            logits = model(x)
+            loss = criterion(logits, y)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        step_helper.step(loss)
 
         train_loss += loss.item()
         preds = torch.argmax(logits, dim=1)
         y_true_train.extend(y.cpu())
         y_pred_train.extend(preds.cpu())
         processed_images += len(y)
-        print(f"Epoch {epoch+1}/{epochs}, Processed {processed_images}/{len(train_loader.dataset)} images", "train_acc:", calculate_accuracy(torch.tensor(y_true_train), torch.tensor(y_pred_train)), "train_loss:", train_loss / (processed_images // batch_size))
+        print(f"Epoch {epoch+1}/{epochs}, Processed {processed_images}/{len(train_loader.dataset)} images", "train_acc:", calculate_accuracy(torch.tensor(y_true_train), torch.tensor(y_pred_train)), "train_loss:", train_loss / max(1, processed_images // batch_size))
+    step_helper.finalize_step()
 
     avg_train_loss = train_loss / len(train_loader)
     train_acc = calculate_accuracy(torch.tensor(y_true_train), torch.tensor(y_pred_train))
@@ -99,6 +131,12 @@ for epoch in range(epochs):
     print(f"Epoch {epoch+1}/{epochs}")
     print(f"  Train Loss: {avg_train_loss:.4f}, Train Acc: {train_acc:.4f}")
     print(f"  Val   Loss: {avg_val_loss:.4f}, Val   Acc: {val_acc:.4f}")
+    log_metrics({
+        "train_loss": avg_train_loss,
+        "train_acc": train_acc,
+        "val_loss": avg_val_loss,
+        "val_acc": val_acc,
+    }, step=epoch + 1)
 
     # Save checkpoints
     torch.save(model.state_dict(), f"model/model_epoch_{epoch + 1}.pth")
@@ -124,3 +162,4 @@ plot_graph(
     ylabel="Accuracy",
     filename="accuracy_comparison.png"
 )
+finish_wandb()

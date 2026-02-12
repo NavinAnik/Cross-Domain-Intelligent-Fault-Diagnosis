@@ -4,8 +4,11 @@ __pycache__/
 *$py.class
 
 # Virtual environment
+venv/
+venv_gpu/
 venev/
 env/
+.venv/
 .venev/
 ENV/
 

@@ -8,7 +8,13 @@ import torch.nn as nn
 import torch.optim as optim
 from utils.plot_graph import plot_graph
 from utils.utils import calculate_accuracy
-from  evaluate_models import evaluate
+from utils.experiment_tracking import init_wandb, log_metrics, finish_wandb
+from evaluate_models import evaluate
+from training.optimization import (
+    enable_gradient_checkpointing,
+    autocast_context,
+    TrainingStepHelper,
+)
 
 # Setup
 load_dotenv("configs/.env")
@@ -26,6 +32,25 @@ batch_size = int(os.getenv("BATCH_SIZE"))
 epochs = int(os.getenv("EPOCHS"))
 lr = float(os.getenv("LEARNING_RATE"))
 num_classes = int(os.getenv("NUM_CLASSES"))
+# Memory optimization (gradient checkpointing, mixed precision, gradient accumulation)
+use_amp = os.getenv("USE_AMP", "true").lower() == "true" and device.type == "cuda"
+accumulation_steps = max(1, int(os.getenv("GRADIENT_ACCUMULATION_STEPS", "1")))
+use_gradient_checkpointing = os.getenv("USE_GRADIENT_CHECKPOINTING", "false").lower() == "true"
+print(f"USE_AMP: {use_amp}, GRADIENT_ACCUMULATION_STEPS: {accumulation_steps}, USE_GRADIENT_CHECKPOINTING: {use_gradient_checkpointing}")
+
+# Experiment tracking (Weights & Biases)
+wandb_config = {
+    "model": "encoder_contrastive",
+    "dataset_path": dataset_path,
+    "batch_size": batch_size,
+    "epochs": epochs,
+    "learning_rate": lr,
+    "num_classes": num_classes,
+    "use_amp": use_amp,
+    "gradient_accumulation_steps": accumulation_steps,
+    "use_gradient_checkpointing": use_gradient_checkpointing,
+}
+init_wandb(project="mimii-anomaly-detection", config=wandb_config, name="pretrain-contrastive")
 
 # Load dataloaders
 train_loader, val_loader = get_dataloaders(dataset_path, batch_size)
@@ -40,8 +65,13 @@ encoder = Encoder(
     mlp_dim=3072,
     dropout=0.1
 ).to(device)
+if use_gradient_checkpointing:
+    enable_gradient_checkpointing(encoder)
 projector = torch.nn.Linear(encoder.feature_dim, 128).to(device)
 optimizer = optim.Adam(list(encoder.parameters()) + list(projector.parameters()), lr=lr)
+step_helper = TrainingStepHelper(
+    optimizer, use_amp=use_amp, device=device, accumulation_steps=accumulation_steps
+)
 
 # Classifier head for evaluation and tracking accuracy
 classifier = nn.Linear(encoder.feature_dim, num_classes).to(device)
@@ -58,20 +88,22 @@ for epoch in range(epochs):
     total_loss = 0
     processed_images = 0
 
-    # === Contrastive Pretraining ===
+    # === Contrastive Pretraining (with optional AMP + gradient accumulation) ===
+    step_helper.zero_grad()
+    step_helper.reset_step_count()
     for x, _ in train_loader:
         x1, x2 = x.to(device), x.to(device)  # TODO: Apply different augmentations here
-        z1 = projector(encoder(x1))
-        z2 = projector(encoder(x2))
-        loss = nt_xent_loss(z1, z2)
+        with autocast_context(use_amp, device):
+            z1 = projector(encoder(x1))
+            z2 = projector(encoder(x2))
+            loss = nt_xent_loss(z1, z2)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        step_helper.step(loss)
 
         total_loss += loss.item()
         processed_images += x1.size(0)
         print(f"Epoch {epoch+1}/{epochs}, Processed {processed_images}/{len(train_loader.dataset)}, Train Loss: {loss.item():.4f}")
+    step_helper.finalize_step()
 
     avg_train_loss = total_loss / len(train_loader)
     train_losses.append(avg_train_loss)
@@ -81,16 +113,20 @@ for epoch in range(epochs):
     classifier.train()
     clf_optimizer = optim.Adam(classifier.parameters(), lr=lr)
 
+    clf_step_helper = TrainingStepHelper(
+        clf_optimizer, use_amp=use_amp, device=device, accumulation_steps=accumulation_steps
+    )
+    clf_step_helper.zero_grad()
+    clf_step_helper.reset_step_count()
     for x, y in train_loader:
         x, y = x.to(device), y.to(device)
         with torch.no_grad():
             features = encoder(x)
-        logits = classifier(features)
-        loss = criterion(logits, y)
-
-        clf_optimizer.zero_grad()
-        loss.backward()
-        clf_optimizer.step()
+        with autocast_context(use_amp, device):
+            logits = classifier(features)
+            loss = criterion(logits, y)
+        clf_step_helper.step(loss)
+    clf_step_helper.finalize_step()
 
     # === Compute Training Accuracy ===
     classifier.eval()
@@ -129,6 +165,12 @@ for epoch in range(epochs):
     # evaluate(y_true_val, y_pred_val, epoch, "results")
 
     print(f"Epoch {epoch+1}/{epochs} | Train Loss: {avg_train_loss:.4f} | Train Acc: {train_acc:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.4f}")
+    log_metrics({
+        "train_loss": avg_train_loss,
+        "train_acc": train_acc,
+        "val_loss": avg_val_loss,
+        "val_acc": val_acc,
+    }, step=epoch + 1)
 
 # Save encoder
 os.makedirs("model", exist_ok=True)
@@ -156,3 +198,4 @@ plot_graph(
     ylabel="Accuracy",
     filename="train_val_accuracy.png"
 )
+finish_wandb()
