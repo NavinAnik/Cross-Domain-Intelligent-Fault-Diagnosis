@@ -1,0 +1,27 @@
+# Additional requirements for unified transformer models
+# Install with: pip install -r requirements_transformers.txt
+
+# Transformer Models
+transformers>=4.46.0      # HuggingFace transformers (BEiT, AST, etc.)
+timm>=1.0.0               # PyTorch Image Models (MAE, Swin, DeiT, etc.)
+accelerate>=0.34.0        # Mixed precision and distributed training
+
+# CLIP (OpenAI Contrastive Language-Image Pre-training) - for clip_encoder.py
+# Option A (recommended for ViT-B/16, zero-shot, encode_text): pip install git+https://github.com/openai/CLIP.git
+# Option B (no extra install): use transformers with use_hf=True in CLIPEncoder/CLIPClassifier
+# CLIP dependencies if using Option A: ftfy>=6.0.0 regex>=2023.0.0
+
+# Experiment Tracking
+wandb>=0.18.0             # Weights & Biases for experiment tracking
+
+# Enhanced Visualization
+seaborn>=0.13.0           # Statistical data visualization
+umap-learn>=0.5.0         # UMAP for dimensionality reduction
+
+# Statistical Analysis
+statsmodels>=0.14.0       # Statistical tests for publication
+
+# Additional utilities
+einops>=0.7.0             # Tensor operations for transformers
+ftfy>=6.0.0               # Text fixing (for CLIP)
+regex>=2023.0.0           # Regex operations (for CLIP)
