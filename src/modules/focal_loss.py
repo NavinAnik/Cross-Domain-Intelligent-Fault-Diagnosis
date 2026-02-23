@@ -53,9 +53,11 @@ class FocalLoss(nn.Module):
         Returns:
             Focal loss value
         """
+        # Ensure FP32 for numerical stability (FP16 + exp/log can cause NaN)
+        if inputs.dtype != torch.float32:
+            inputs = inputs.float()
         # Compute cross-entropy loss without reduction
         ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-        
         # Get probability of the true class
         p_t = torch.exp(-ce_loss)
         

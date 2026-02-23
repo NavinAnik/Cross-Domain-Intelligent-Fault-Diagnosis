@@ -1,8 +1,8 @@
 """
 Unified experiment runner for all single-model training.
 
-Trains and evaluates: DINOv2, MAE, Swin, BEiT, DeiT, CLIP (vision), AST (audio).
-Use from CLI: python -m experiments.run_all_models --model dinov2 [--epochs 20] ...
+Trains and evaluates: DINOv3, DINOv2, MAE, Swin, BEiT, DeiT, CLIP (vision), AST (audio).
+Default: DINOv3 (HF token set globally). Use: python -m experiments.run_all_models --model dinov3 [--epochs 50] ...
 """
 
 import logging
@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 from PIL import Image
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_recall_fscore_support
@@ -173,10 +173,14 @@ def _get_image_dataloaders(
     get_transforms: Callable[..., Dict[str, Any]],
     val_split: float = 0.2,
     image_size: int = 224,
+    use_weighted_sampler: bool = False,
+    train_idx: Optional[List[int]] = None,
+    val_idx: Optional[List[int]] = None,
     **transform_kwargs,
 ) -> Tuple[DataLoader, DataLoader, List[int]]:
     """Build train/val image dataloaders using the given transform getter.
     Returns: train_loader, val_loader, train_labels (for class weighting)
+    If train_idx/val_idx provided (e.g. for CV), use those instead of random split.
     """
     transforms_dict = get_transforms(image_size=image_size, **transform_kwargs)
     train_ds = ImageDataset(dataset_path, transform=transforms_dict["train"])
@@ -184,17 +188,33 @@ def _get_image_dataloaders(
     if len(train_ds.samples) == 0:
         raise FileNotFoundError(f"No images found under {dataset_path}")
     indices = list(range(len(train_ds)))
-    train_idx, val_idx = train_test_split(
-        indices, test_size=val_split, stratify=train_ds.labels, random_state=42
-    )
+    if train_idx is not None and val_idx is not None:
+        pass
+    else:
+        train_idx, val_idx = train_test_split(
+            indices, test_size=val_split, stratify=train_ds.labels, random_state=42
+        )
     
     # Get train labels for class weighting
     train_labels = [train_ds.labels[i] for i in train_idx]
     
+    sampler = None
+    shuffle = True
+    if use_weighted_sampler and len(train_labels) > 0:
+        class_counts = Counter(train_labels)
+        total = sum(class_counts.values())
+        num_classes = len(class_counts)
+        weights = [total / (num_classes * class_counts.get(i, 1)) for i in range(num_classes)]
+        sample_weights = torch.tensor([weights[l] for l in train_labels], dtype=torch.float)
+        sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
+        shuffle = False
+        logger.info("Using WeightedRandomSampler for class balancing")
+    
     train_loader = DataLoader(
         Subset(train_ds, train_idx),
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         num_workers=4,
         pin_memory=True,
     )
@@ -493,6 +513,21 @@ def get_default_config(model_name: str) -> Dict[str, Any]:
         "output_dir": "model",
         "results_dir": "results",
     }
+    if model_name == "dinov3":
+        # Bigger model: ViT-H+ (1280-dim); use vitl16 if OOM
+        defaults["dinov3_model"] = os.getenv("DINOV3_MODEL", "facebook/dinov3-vith16plus-pretrain-lvd1689m")
+        defaults["learning_rate"] = float(os.getenv("LEARNING_RATE", 1e-4))
+        defaults["batch_size"] = min(defaults["batch_size"], 24)
+        defaults["dropout"] = 0.2
+        defaults["epochs"] = int(os.getenv("EPOCHS", 50))
+        defaults["weight_decay"] = 0.05
+        defaults["augment_strength"] = os.getenv("AUGMENT_STRENGTH", "strong").lower()
+        # FocalLoss + AMP causes NaN; use CrossEntropyLoss (class weights still applied)
+        defaults["use_focal_loss"] = os.getenv("USE_FOCAL_LOSS", "false").lower() == "true"
+        defaults["use_weighted_sampler"] = os.getenv("USE_WEIGHTED_SAMPLER", "true").lower() == "true"
+        defaults["early_stopping_patience"] = 15
+        defaults["best_metric"] = "val_macro_f1"
+        defaults["scheduler"] = os.getenv("SCHEDULER", "cosine").lower()
     if model_name == "ast":
         defaults["learning_rate"] = 1e-5
         defaults["batch_size"] = min(defaults["batch_size"], 24)
@@ -515,6 +550,7 @@ def _train_one_epoch(
     epoch: int,
     epochs: int,
     use_amp: bool,
+    batch_scheduler: Optional[Any] = None,
 ) -> Tuple[float, float]:
     model.train()
     total_loss = 0.0
@@ -526,9 +562,13 @@ def _train_one_epoch(
         x, y = x.to(device), y.to(device)
         with autocast_context(use_amp, device):
             logits = model(x)
-            loss = criterion(logits, y)
+            # FocalLoss is numerically unstable with FP16 logits; use float32
+            loss_inputs = logits.float() if logits.dtype != torch.float32 else logits
+            loss = criterion(loss_inputs, y)
         step_helper.step(loss)
         total_loss += loss.item()
+        if batch_scheduler is not None:
+            batch_scheduler.step()
         preds = torch.argmax(logits.detach(), dim=1)
         y_true.extend(y.cpu().tolist())
         y_pred.extend(preds.cpu().tolist())
@@ -555,7 +595,8 @@ def _validate(
     for x, y in val_loader:
         x, y = x.to(device), y.to(device)
         logits = model(x)
-        loss = criterion(logits, y)
+        loss_inputs = logits.float() if logits.dtype != torch.float32 else logits
+        loss = criterion(loss_inputs, y)
         total_loss += loss.item()
         preds = torch.argmax(logits, dim=1)
         y_true.extend(y.cpu().tolist())
@@ -618,15 +659,25 @@ def run_single_model(
     model_builder, data_getter, transform_getter = _MODEL_REGISTRY[model_name]
     train_labels = None  # For class weighting (image models only)
     
+    _AUGMENT_STRENGTH_MODELS = {"dinov2", "dinov3", "rtdetrv4_l", "rtdetrv4_l_distill", "eva02", "metaclip2", "siglip2"}
     if transform_getter is not None:
         get_transforms = transform_getter()
-        train_loader, val_loader, train_labels = data_getter(
-            cfg["dataset_path"],
-            cfg["batch_size"],
+        transform_kwargs = {}
+        if "augment_strength" in cfg and model_name in _AUGMENT_STRENGTH_MODELS:
+            transform_kwargs["augment_strength"] = cfg["augment_strength"]
+        data_kw = dict(
+            dataset_path=cfg["dataset_path"],
+            batch_size=cfg["batch_size"],
             get_transforms=get_transforms,
             val_split=cfg.get("val_split", 0.2),
             image_size=cfg.get("image_size", 224),
+            use_weighted_sampler=cfg.get("use_weighted_sampler", False),
+            **transform_kwargs,
         )
+        if "train_idx" in cfg and "val_idx" in cfg:
+            data_kw["train_idx"] = cfg["train_idx"]
+            data_kw["val_idx"] = cfg["val_idx"]
+        train_loader, val_loader, train_labels = data_getter(**data_kw)
     else:
         train_loader, val_loader = data_getter(
             cfg["dataset_path"],
@@ -647,18 +698,47 @@ def run_single_model(
         class_counts = Counter(train_labels)
         total = sum(class_counts.values())
         num_classes = cfg.get("num_classes", 2)
-        class_weights = [total / (num_classes * class_counts[i]) for i in range(num_classes)]
+        class_weights = [total / (num_classes * class_counts.get(i, 1)) for i in range(num_classes)]
         class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
         logger.info("Class distribution: %s", dict(class_counts))
         logger.info("Using balanced class weights: %s", class_weights.tolist())
-    
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+    use_focal = cfg.get("use_focal_loss", False)
+    if use_focal and train_labels is not None:
+        try:
+            from modules.focal_loss import FocalLoss
+            focal_alpha = cfg.get("focal_alpha", [0.2, 0.8])
+            if isinstance(focal_alpha, str):
+                focal_alpha = [float(x) for x in focal_alpha.replace(",", " ").split()]
+            focal_gamma = cfg.get("focal_gamma", 2.0)
+            alpha_t = torch.tensor(focal_alpha, dtype=torch.float32).to(device)
+            criterion = FocalLoss(alpha=alpha_t, gamma=focal_gamma)
+            logger.info("Using FocalLoss (alpha=%s, gamma=%s)", focal_alpha, focal_gamma)
+        except ImportError:
+            criterion = nn.CrossEntropyLoss(weight=class_weights)
+            logger.warning("FocalLoss not found, using CrossEntropyLoss")
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.AdamW(
         [p for p in model.parameters() if p.requires_grad],
         lr=cfg["learning_rate"],
-        weight_decay=0.01,
+        weight_decay=cfg.get("weight_decay", 0.05),
     )
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg["epochs"])
+    epochs = cfg["epochs"]
+    scheduler_type = cfg.get("scheduler", "cosine").lower()
+    if scheduler_type == "onecycle":
+        total_steps = len(train_loader) * epochs
+        scheduler = optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=cfg["learning_rate"],
+            total_steps=total_steps,
+            pct_start=0.1,
+        )
+        use_step_scheduler = True
+        logger.info("Using OneCycleLR (warmup 10%%)")
+    else:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        use_step_scheduler = False
     step_helper = TrainingStepHelper(
         optimizer, use_amp=use_amp, device=device, accumulation_steps=accumulation_steps
     )
@@ -677,17 +757,23 @@ def run_single_model(
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
     val_precisions, val_recalls, val_f1s = [], [], []
+    best_metric_val = 0.0
     best_val_acc = 0.0
+    best_metric_name = cfg.get("best_metric", "val_macro_f1")
+    early_stop_patience = cfg.get("early_stopping_patience", 0)
+    epochs_no_improve = 0
     epochs = cfg["epochs"]
     output_dir = cfg.get("output_dir", "model")
     results_dir = cfg.get("results_dir", "results")
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(results_dir, exist_ok=True)
+    batch_scheduler = scheduler if use_step_scheduler else None
 
     for epoch in range(1, epochs + 1):
         logger.info("Epoch %d/%d %s", epoch, epochs, "-" * 40)
         train_loss, train_acc = _train_one_epoch(
-            model, train_loader, criterion, step_helper, device, epoch, epochs, use_amp
+            model, train_loader, criterion, step_helper, device, epoch, epochs, use_amp,
+            batch_scheduler=batch_scheduler,
         )
         val_loss, val_acc, y_true, y_pred = _validate(model, val_loader, criterion, device)
         
@@ -703,7 +789,8 @@ def run_single_model(
         prec_weighted, rec_weighted, f1_weighted, _ = precision_recall_fscore_support(
             y_true_np, y_pred_np, average='weighted', zero_division=0
         )
-        scheduler.step()
+        if not use_step_scheduler:
+            scheduler.step()
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
@@ -715,7 +802,7 @@ def run_single_model(
 
         logger.info("  Train Loss: %.4f | Train Acc: %.4f", train_loss, train_acc)
         logger.info("  Val Loss: %.4f | Val Acc: %.4f", val_loss, val_acc)
-        logger.info("  Val Precision: %.4f | Val Recall: %.4f | Val F1: %.4f", precision, recall, f1)
+        logger.info("  Val Precision: %.4f | Val Recall: %.4f | Val F1: %.4f | Val Macro F1: %.4f", precision, recall, f1, f1_macro)
         if _HAS_WANDB:
             log_metrics({
                 "train_loss": train_loss,
@@ -734,16 +821,26 @@ def run_single_model(
                 "learning_rate": scheduler.get_last_lr()[0],
             }, step=epoch)
 
-        if val_acc > best_val_acc:
+        metric_val = f1_macro if best_metric_name == "val_macro_f1" else val_acc
+        if metric_val > best_metric_val:
+            best_metric_val = metric_val
             best_val_acc = val_acc
+            epochs_no_improve = 0
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_acc": val_acc,
+                "val_macro_f1": f1_macro,
                 "val_loss": val_loss,
             }, os.path.join(output_dir, f"{model_name}_best.pth"))
-            logger.info("  Saved best model (Val Acc: %.4f)", val_acc)
+            logger.info("  Saved best model (%s: %.4f)", best_metric_name, metric_val)
+        else:
+            epochs_no_improve += 1
+
+        if early_stop_patience > 0 and epochs_no_improve >= early_stop_patience:
+            logger.info("Early stopping at epoch %d (no improvement for %d epochs)", epoch, early_stop_patience)
+            break
 
     torch.save({
         "epoch": epochs,
@@ -872,6 +969,7 @@ def run_single_model(
         "val_recalls": val_recalls,
         "val_f1s": val_f1s,
         "best_val_acc": best_val_acc,
+        "best_val_macro_f1": best_metric_val if best_metric_name == "val_macro_f1" else None,
         "final_val_acc": val_accs[-1],
         "final_val_precision": val_precisions[-1],
         "final_val_recall": val_recalls[-1],
@@ -884,8 +982,8 @@ def run_single_model(
 def main():
     setup_logging(log_dir="logs")
     parser = argparse.ArgumentParser(description="Unified runner for all single models")
-    parser.add_argument("--model", type=str, required=True, choices=list_models(),
-                        help="Model to train (e.g. dinov2, mae, ast)")
+    parser.add_argument("--model", type=str, default="dinov3", choices=list_models(),
+                        help="Model to train (default: dinov3). Options: dinov3, dinov2, mae, ast, etc.")
     parser.add_argument("--epochs", type=int, default=None, help="Number of epochs")
     parser.add_argument("--batch_size", type=int, default=None, help="Batch size")
     parser.add_argument("--lr", type=float, default=None, help="Learning rate")
