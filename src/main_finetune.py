@@ -7,6 +7,7 @@ from modules.data_loader import get_audio_dataloaders
 from modules.encoder import Encoder
 from modules.classifier import ClassificationModel
 from utils.plot_graph import plot_graph
+from utils.logging_config import setup_logging
 from utils.experiment_tracking import init_wandb, log_metrics, finish_wandb
 from evaluate_models import evaluate
 from training.optimization import (
@@ -17,6 +18,7 @@ from training.optimization import (
 
 # Load environment variables
 load_dotenv("configs/.env")
+setup_logging(log_dir="logs")
 if torch.cuda.is_available():
     device = torch.device("cuda")
 elif torch.backends.mps.is_available():

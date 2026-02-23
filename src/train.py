@@ -15,7 +15,10 @@ from sklearn.metrics import (
     f1_score,
     auc,
 )
+import logging
 import matplotlib.pyplot as plt
+
+logger = logging.getLogger(__name__)
 
 try:
     from training.optimization import (
@@ -27,6 +30,7 @@ try:
 except ImportError:
     _HAS_OPTIMIZATION = False
 
+from utils.logging_config import setup_logging
 try:
     from utils.experiment_tracking import init_wandb, log_metrics, finish_wandb
     _HAS_WANDB = True
@@ -52,9 +56,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 USE_AMP = os.environ.get("USE_AMP", "true").lower() == "true" and DEVICE.type == "cuda"
 GRADIENT_ACCUMULATION_STEPS = max(1, int(os.environ.get("GRADIENT_ACCUMULATION_STEPS", "1")))
 USE_GRADIENT_CHECKPOINTING = os.environ.get("USE_GRADIENT_CHECKPOINTING", "false").lower() == "true"
-print(f"Using device: {DEVICE}")
+logger.info("Using device: %s", DEVICE)
 if _HAS_OPTIMIZATION:
-    print(f"Optimization: USE_AMP={USE_AMP}, GRADIENT_ACCUMULATION_STEPS={GRADIENT_ACCUMULATION_STEPS}, USE_GRADIENT_CHECKPOINTING={USE_GRADIENT_CHECKPOINTING}")
+    logger.info("Optimization: USE_AMP=%s, GRADIENT_ACCUMULATION_STEPS=%s, USE_GRADIENT_CHECKPOINTING=%s", USE_AMP, GRADIENT_ACCUMULATION_STEPS, USE_GRADIENT_CHECKPOINTING)
 SEED = 42
 # ------------------------------
 
@@ -252,17 +256,17 @@ def evaluate(model, val_loader):
 
     # Confusion matrix
     cm = confusion_matrix(targets, pred_labels)
-    print("Confusion Matrix:\n", cm)
+    logger.info("Confusion Matrix:\n%s", cm)
 
     # AUC
     auc_score = roc_auc_score(targets, scores)
-    print(f"AUC: {auc_score:.4f}")
+    logger.info("AUC: %.4f", auc_score)
 
     # Precision, Recall, F1 Curve data
     precision, recall, thresholds = precision_recall_curve(targets, scores)
     f1_scores = 2 * precision * recall / (precision + recall + 1e-8)
     max_f1 = f1_scores.max()
-    print(f"Max F1-score: {max_f1:.4f}")
+    logger.info("Max F1-score: %.4f", max_f1)
 
     # Plot ROC curve, Precision-Recall curve, F1 vs threshold
     plt.figure(figsize=(12, 4))
@@ -406,14 +410,14 @@ def train_contrastive_with_eval(train_root, val_root):
                 optimizer.step()
 
             total_loss += loss.item() * x1.size(0)
-            print(f"[Epoch {epoch}] Processed {len(train_loader.dataset)} samples, Loss: {loss.item():.4f}")
+            logger.info("[Epoch %d] Processed %d samples, Loss: %.4f", epoch, len(train_loader.dataset), loss.item())
         if step_helper:
             step_helper.finalize_step()
 
         avg_train_loss = total_loss / len(train_loader.dataset)
         train_losses.append(avg_train_loss)
 
-        print(f"[Epoch {epoch}] Train Contrastive Loss: {avg_train_loss:.4f}")
+        logger.info("[Epoch %d] Train Contrastive Loss: %.4f", epoch, avg_train_loss)
 
         # Evaluate on validation set embeddings to get some metric
         auc_score, max_f1 = evaluate(encoder, val_loader)
@@ -428,4 +432,5 @@ def train_contrastive_with_eval(train_root, val_root):
 
 
 if __name__ == "__main__":
+    setup_logging(log_dir="logs")
     train_contrastive_with_eval("F:\dataset\MIMII_Dataset\\train\\6dB", "F:\dataset\MIMII_Dataset\\val\\-6dB")

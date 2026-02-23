@@ -2,9 +2,12 @@
 Statistical tests and confidence intervals for evaluation (e.g. cross-validation).
 
 Provides:
-- 95% confidence intervals for metric means (e.g. across folds).
+- 95% and 99% confidence intervals for metric means (e.g. across folds).
+- Bootstrap confidence intervals for accuracy.
 - Paired t-test for comparing two methods across folds.
 - Wilcoxon signed-rank test for non-parametric comparison.
+- Chi-square test for contingency tables.
+- Friedman test for comparing multiple methods across blocks.
 """
 
 import numpy as np
@@ -201,3 +204,78 @@ def significance_matrix(
     if "wilcoxon" in tests:
         out["pvalue_wilcoxon"] = pvalue_wilcoxon
     return out
+
+
+def chi_square_test(observed):
+    """
+    Chi-square test for independence on a contingency table.
+
+    Args:
+        observed: 2D array, contingency table (e.g. confusion matrix or counts).
+
+    Returns:
+        dict: {"statistic": float, "pvalue": float, "dof": int}
+    """
+    observed = np.asarray(observed)
+    stat, pval, dof, _ = stats.chi2_contingency(observed)
+    return {"statistic": float(stat), "pvalue": float(pval), "dof": int(dof)}
+
+
+def friedman_test(*samples):
+    """
+    Friedman test for comparing multiple methods across the same blocks (e.g. folds).
+
+    Args:
+        *samples: One array per method, each of length n (number of blocks/folds).
+            e.g. friedman_test(scores_model_a, scores_model_b, scores_model_c)
+
+    Returns:
+        dict: {"statistic": float, "pvalue": float}
+    """
+    data = np.column_stack([np.asarray(s).ravel() for s in samples])
+    stat, pval = stats.friedmanchisquare(*data.T)
+    return {"statistic": float(stat), "pvalue": float(pval)}
+
+
+def bootstrap_accuracy(y_true, y_pred, n_bootstrap=1000, confidence=0.95, random_state=None):
+    """
+    Bootstrap confidence interval for accuracy.
+
+    Args:
+        y_true: Ground truth labels.
+        y_pred: Predicted labels.
+        n_bootstrap: Number of bootstrap samples.
+        confidence: Confidence level (e.g. 0.95 for 95% CI, 0.99 for 99% CI).
+        random_state: Random seed.
+
+    Returns:
+        dict: {"accuracy_mean": float, "ci_lower": float, "ci_upper": float,
+               "accuracy_std": float, "ci_95_lower", "ci_95_upper", "ci_99_lower", "ci_99_upper"}
+    """
+    rng = np.random.default_rng(random_state)
+    y_true = np.asarray(y_true).ravel()
+    y_pred = np.asarray(y_pred).ravel()
+    n = len(y_true)
+    accs = []
+    for _ in range(n_bootstrap):
+        idx = rng.integers(0, n, size=n)
+        acc = np.mean(y_true[idx] == y_pred[idx])
+        accs.append(acc)
+    accs = np.array(accs)
+    alpha = 1 - confidence
+    ci_lower = float(np.percentile(accs, 100 * alpha / 2))
+    ci_upper = float(np.percentile(accs, 100 * (1 - alpha / 2)))
+    ci_95_lo = float(np.percentile(accs, 2.5))
+    ci_95_hi = float(np.percentile(accs, 97.5))
+    ci_99_lo = float(np.percentile(accs, 0.5))
+    ci_99_hi = float(np.percentile(accs, 99.5))
+    return {
+        "accuracy_mean": float(np.mean(accs)),
+        "accuracy_std": float(np.std(accs)),
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "ci_95_lower": ci_95_lo,
+        "ci_95_upper": ci_95_hi,
+        "ci_99_lower": ci_99_lo,
+        "ci_99_upper": ci_99_hi,
+    }

@@ -31,6 +31,7 @@ from modules.focal_loss import FocalLoss, LabelSmoothingCrossEntropy, CombinedLo
 from modules.mixup import mixup_data, cutmix_data, mixup_criterion
 from utils.plot_graph import plot_graph
 from utils.utils import calculate_accuracy
+from utils.logging_config import setup_logging
 from utils.experiment_tracking import init_wandb, log_metrics, finish_wandb
 from training.optimization import autocast_context, TrainingStepHelper
 
@@ -265,6 +266,7 @@ def validate(model, val_loader, criterion, device):
 
 
 def main():
+    setup_logging(log_dir="logs")
     # ============ Setup ============
     load_dotenv("configs/.env")
     

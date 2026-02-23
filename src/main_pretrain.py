@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 from utils.plot_graph import plot_graph
 from utils.utils import calculate_accuracy
+from utils.logging_config import setup_logging
 from utils.experiment_tracking import init_wandb, log_metrics, finish_wandb
 from evaluate_models import evaluate
 from training.optimization import (
@@ -18,6 +19,7 @@ from training.optimization import (
 
 # Setup
 load_dotenv("configs/.env")
+setup_logging(log_dir="logs")
 if torch.cuda.is_available():
     device = torch.device("cuda")
 elif torch.backends.mps.is_available():

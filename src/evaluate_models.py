@@ -1,6 +1,9 @@
 #generate confusion matrix and classification report
+import logging
 import os
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 import seaborn as sns
@@ -30,6 +33,8 @@ from modules.statistical_tests import (
     wilcoxon_signed_rank,
     aggregate_cv_metrics,
     significance_matrix,
+    chi_square_test,
+    bootstrap_accuracy,
 )
 from modules.visualization import (
     plot_tsne_umap,
@@ -91,6 +96,25 @@ def plot_precision_recall_curve(y_true, y_pred_probs, epoch,out_dir):
     plt.savefig(f'{out_dir}/pr_curve_epoch_{epoch}.png')
     plt.close()
     return pr_auc
+
+def plot_confidence_histogram(y_pred_probs, epoch, out_dir, n_bins=20):
+    """
+    Plot histogram of predicted confidence (max softmax probability per sample).
+    Saves to out_dir/confidence_histogram_epoch_{epoch}.png
+    """
+    probs = np.asarray(y_pred_probs)
+    if probs.ndim == 2:
+        confidences = np.max(probs, axis=1)
+    else:
+        confidences = probs
+    plt.figure(figsize=(8, 5))
+    plt.hist(confidences, bins=n_bins, edgecolor="black", alpha=0.7)
+    plt.xlabel("Predicted Confidence (max probability)")
+    plt.ylabel("Count")
+    plt.title(f"Confidence Distribution - Epoch {epoch}")
+    plt.savefig(os.path.join(out_dir, f"confidence_histogram_epoch_{epoch}.png"))
+    plt.close()
+
 
 def plot_classification_report(y_true, y_pred, epoch,out_dir):
     report = classification_report(y_true, y_pred, output_dict=True)
@@ -189,41 +213,86 @@ def _ensure_labels_and_probs(y_true, y_pred_probs_or_labels):
         return y_pred, None
 
 
-def evaluate(y_true, y_pred_probs_or_labels, epoch, out_dir):
+def evaluate(
+    y_true,
+    y_pred_probs_or_labels,
+    epoch,
+    out_dir,
+    include_statistical_tests=True,
+):
     """
-    Full evaluation: confusion matrix, ROC/PR (if probs given), classification report,
-    MCC, Cohen's Kappa. Accepts either predicted labels (1D) or predicted probabilities (2D).
+    Full evaluation: confusion matrix, ROC, PR curve, confidence histogram,
+    classification report, MCC, Cohen's Kappa, Brier, ECE, bootstrap CI,
+    sensitivity, specificity, PPV, NPV, chi-square test.
+    Accepts either predicted labels (1D) or predicted probabilities (2D).
     """
     y_pred, roc_probs = _ensure_labels_and_probs(y_true, y_pred_probs_or_labels)
+    probs_2d = np.asarray(y_pred_probs_or_labels) if np.asarray(y_pred_probs_or_labels).ndim == 2 else None
 
     cm = plot_confusion_matrix(y_true, y_pred, epoch, out_dir)
-    print("Confusion Matrix:\n", cm)
 
     if roc_probs is not None:
         roc_auc = plot_roc_curve(y_true, roc_probs, epoch, out_dir)
-        print("ROC AUC:", roc_auc)
         pr_auc = plot_precision_recall_curve(y_true, roc_probs, epoch, out_dir)
-        print("Precision-Recall AUC:", pr_auc)
+        if probs_2d is not None:
+            plot_confidence_histogram(probs_2d, epoch, out_dir)
     else:
         roc_auc = pr_auc = None
 
     report_df = plot_classification_report(y_true, y_pred, epoch, out_dir)
-    print("Classification Report:\n", report_df)
 
-    # MCC and Cohen's Kappa
-    mcc = matthews_corrcoef(y_true, y_pred)
-    kappa = cohen_kappa_score(y_true, y_pred)
-    print("Matthews Correlation Coefficient (MCC):", mcc)
-    print("Cohen's Kappa:", kappa)
-
-    # Add MCC and Kappa to report and save
+    # Full metrics (macro, weighted, brier, ECE, diagnostic, etc.)
     metrics = compute_classification_metrics(y_true, y_pred, y_pred_probs=roc_probs)
+
+    # Bootstrap accuracy with 95% and 99% CI
+    boot = bootstrap_accuracy(y_true, y_pred, n_bootstrap=1000, random_state=42)
+    metrics["bootstrap_accuracy_mean"] = boot["accuracy_mean"]
+    metrics["bootstrap_ci_95_lower"] = boot["ci_95_lower"]
+    metrics["bootstrap_ci_95_upper"] = boot["ci_95_upper"]
+    metrics["bootstrap_ci_99_lower"] = boot["ci_99_lower"]
+    metrics["bootstrap_ci_99_upper"] = boot["ci_99_upper"]
+
+    # Chi-square test on confusion matrix
+    if include_statistical_tests and cm.size >= 4:
+        chi2 = chi_square_test(cm)
+        metrics["chi2_statistic"] = chi2["statistic"]
+        metrics["chi2_pvalue"] = chi2["pvalue"]
+        metrics["chi2_dof"] = chi2["dof"]
+
+    mcc = metrics.get("mcc", matthews_corrcoef(y_true, y_pred))
+    kappa = metrics.get("cohen_kappa", cohen_kappa_score(y_true, y_pred))
     n_cols = report_df.shape[1]
     report_df.loc["mcc"] = [mcc] + [""] * (n_cols - 1)
     report_df.loc["cohen_kappa"] = [kappa] + [""] * (n_cols - 1)
     report_df.to_csv(os.path.join(out_dir, f"classification_report_epoch_{epoch}.csv"))
 
     return {"cm": cm, "roc_auc": roc_auc, "pr_auc": pr_auc, "report": report_df, **metrics}
+
+
+def compute_per_split_metrics(splits: dict) -> dict:
+    """
+    Compute metrics per split (train, val, test) and return flat dict with keys like
+    train/accuracy, val/macro_f1, test/weighted_precision.
+
+    Args:
+        splits: Dict of split_name -> (y_true, y_pred, y_pred_probs or None).
+            e.g. {"train": (y_t, y_p, probs_t), "val": (y_v, y_pv, probs_v)}.
+
+    Returns:
+        dict: Flattened metrics, e.g. train/accuracy, val/macro_f1, etc.
+    """
+    out = {}
+    for split_name, data in splits.items():
+        if len(data) == 2:
+            y_true, y_pred = data
+            probs = None
+        else:
+            y_true, y_pred, probs = data
+        m = compute_classification_metrics(y_true, y_pred, y_pred_probs=probs)
+        for k, v in m.items():
+            if isinstance(v, (int, float)):
+                out[f"{split_name}/{k}"] = v
+    return out
 
 
 def print_cv_metrics_with_ci(list_of_metric_dicts, confidence=0.95):
@@ -237,10 +306,10 @@ def print_cv_metrics_with_ci(list_of_metric_dicts, confidence=0.95):
         confidence: Confidence level (default 0.95).
     """
     aggregated = aggregate_cv_metrics(list_of_metric_dicts, confidence=confidence)
-    print("\n--- Cross-validation metrics (mean ± CI) ---")
+    logger.info("--- Cross-validation metrics (mean ± CI) ---")
     for name, vals in aggregated.items():
         if vals["ci_str"] is not None:
-            print(f"  {name}: {vals['ci_str']}")
+            logger.info("  %s: %s", name, vals["ci_str"])
 
 
 def compare_two_models(scores_a, scores_b, metric_name="accuracy"):
@@ -255,10 +324,10 @@ def compare_two_models(scores_a, scores_b, metric_name="accuracy"):
     """
     t_result = paired_ttest(scores_a, scores_b)
     w_result = wilcoxon_signed_rank(scores_a, scores_b)
-    print(f"\n--- Comparison ({metric_name}) ---")
-    print(f"  Paired t-test: statistic={t_result['statistic']:.4f}, p-value={t_result['pvalue']:.4f}")
-    print(f"  Wilcoxon signed-rank: statistic={w_result['statistic']:.4f}, p-value={w_result['pvalue']:.4f}")
-    print(f"  Mean difference (A - B): {t_result['mean_diff']:.4f}")
+    logger.info("--- Comparison (%s) ---", metric_name)
+    logger.info("  Paired t-test: statistic=%.4f, p-value=%.4f", t_result["statistic"], t_result["pvalue"])
+    logger.info("  Wilcoxon signed-rank: statistic=%.4f, p-value=%.4f", w_result["statistic"], w_result["pvalue"])
+    logger.info("  Mean difference (A - B): %.4f", t_result["mean_diff"])
     return {"paired_ttest": t_result, "wilcoxon": w_result}
 
 
@@ -385,13 +454,13 @@ def run_statistical_analysis(
         ]
 
     # Per-model aggregated metrics with CI
-    print("\n--- Cross-validation metrics (mean ± 95% CI) per model ---")
+    logger.info("--- Cross-validation metrics (mean ± 95%% CI) per model ---")
     for model_name, per_fold in metrics_by_model.items():
         agg = aggregate_cv_metrics(per_fold, confidence=confidence)
-        print(f"\n{model_name}:")
+        logger.info("%s:", model_name)
         for k in metric_names:
             if k in agg and agg[k]["ci_str"] is not None:
-                print(f"  {k}: {agg[k]['ci_str']}")
+                logger.info("  %s: %s", k, agg[k]["ci_str"])
 
     # Box plots: metric distributions across folds
     plot_cv_metric_boxplots(
@@ -401,7 +470,7 @@ def run_statistical_analysis(
         title="Cross-Validation Metric Distributions (by model)",
         ylim=(0, 1),
     )
-    print(f"\nBox plots saved to {os.path.join(output_dir, 'cv_metric_boxplots.png')}")
+    logger.info("Box plots saved to %s", os.path.join(output_dir, "cv_metric_boxplots.png"))
 
     # Significance matrix for primary metric (accuracy) and optionally others
     key_metrics = ["accuracy", "f1", "auc_roc"]
@@ -431,15 +500,15 @@ def run_statistical_analysis(
                 for i, name in enumerate(names):
                     row = [name] + [f"{sm[arr_key][i, j]:.4f}" for j in range(len(names))]
                     w.writerow(row)
-            print(f"Significance matrix ({metric}, {test_key}) saved to {path}")
-        # Print to console
-        print(f"\n--- Statistical significance ({metric}): Paired t-test p-values ---")
-        print("(p < 0.05 suggests significant difference between models)")
+            logger.info("Significance matrix (%s, %s) saved to %s", metric, test_key, path)
+        # Log to console
+        logger.info("--- Statistical significance (%s): Paired t-test p-values ---", metric)
+        logger.info("(p < 0.05 suggests significant difference between models)")
         pv = sm["pvalue_ttest"]
         for i, ni in enumerate(names):
             for j, nj in enumerate(names):
                 if i < j:
-                    print(f"  {ni} vs {nj}: p = {pv[i, j]:.4f}")
+                    logger.info("  %s vs %s: p = %.4f", ni, nj, pv[i, j])
 
 
 # if __name__ == "__main__":

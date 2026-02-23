@@ -28,6 +28,7 @@ from modules.focal_loss import FocalLoss
 from modules.mixup import MixupCutmixTransform, mixup_criterion
 from utils.plot_graph import plot_graph
 from utils.utils import calculate_accuracy
+from utils.logging_config import setup_logging
 from utils.experiment_tracking import init_wandb, log_metrics, finish_wandb
 from training.optimization import autocast_context, TrainingStepHelper
 
@@ -265,6 +266,7 @@ def validate_with_tta(model, val_loader, criterion, device, num_classes=2, n_aug
 
 
 def main():
+    setup_logging(log_dir="logs")
     # ============ Setup ============
     # Load .env from repo root or src (works when run as python main_dinov2.py or python src/main_dinov2.py)
     _src_dir = os.path.dirname(os.path.abspath(__file__))

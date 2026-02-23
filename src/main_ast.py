@@ -18,6 +18,7 @@ from modules.ast_encoder import ASTClassifier, get_ast_normalization
 from modules.data_loader import MIMIIAudioDataset, get_audio_dataloaders
 from utils.plot_graph import plot_graph
 from utils.utils import calculate_accuracy
+from utils.logging_config import setup_logging
 
 
 def get_dataloaders(dataset_path, batch_size, val_split=0.2):
@@ -94,6 +95,7 @@ def validate(model, val_loader, criterion, device):
 
 
 def main():
+    setup_logging(log_dir="logs")
     # ============ Setup ============
     load_dotenv("configs/.env")
 

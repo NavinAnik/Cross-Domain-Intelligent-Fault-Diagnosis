@@ -12,7 +12,10 @@ Supported models:
 - dinov2_vitg14: ViT-Giant (1536 dim) - ~12GB VRAM with FP16
 """
 
+import logging
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 import torch
 import torch.nn as nn
 
@@ -48,23 +51,23 @@ class DINOv2Encoder(nn.Module):
         self.feature_dim = self.FEATURE_DIMS.get(model_name, 1024)
         
         # Load DINOv2 from torch hub
-        print(f"Loading {model_name} from torch.hub...")
+        logger.info("Loading %s from torch.hub...", model_name)
         self.backbone = torch.hub.load(
             'facebookresearch/dinov2', 
             model_name,
             pretrained=True
         )
-        print(f"Loaded {model_name} with feature dim {self.feature_dim}")
+        logger.info("Loaded %s with feature dim %s", model_name, self.feature_dim)
         
         # Freeze backbone if requested
         if freeze_backbone:
             self._freeze_backbone()
-            print("Backbone frozen - only classifier will be trained")
+            logger.info("Backbone frozen - only classifier will be trained")
         
         # Convert to FP16 if requested
         if use_fp16:
             self.backbone = self.backbone.half()
-            print("Using FP16 for reduced memory usage")
+            logger.info("Using FP16 for reduced memory usage")
     
     def _freeze_backbone(self):
         """Freeze all backbone parameters."""
@@ -196,7 +199,7 @@ class EnhancedClassifierHead(nn.Module):
             nn.Linear(in_dim, num_classes)
         )
         
-        print(f"Enhanced Classifier: {feature_dim} -> {hidden_dims} -> {num_classes}")
+        logger.info("Enhanced Classifier: %s -> %s -> %s", feature_dim, hidden_dims, num_classes)
     
     def forward(self, x):
         """
@@ -269,7 +272,7 @@ class DINOv2Classifier(nn.Module):
         if use_multi_layer_features:
             # Concatenate features from multiple layers
             feature_dim = base_feature_dim * n_last_blocks
-            print(f"Using multi-layer features from last {n_last_blocks} blocks: {feature_dim} dims")
+            logger.info("Using multi-layer features from last %s blocks: %s dims", n_last_blocks, feature_dim)
         else:
             feature_dim = base_feature_dim
         
@@ -292,7 +295,7 @@ class DINOv2Classifier(nn.Module):
                 nn.Dropout(dropout),
                 nn.Linear(feature_dim, num_classes)
             )
-            print(f"Linear Classifier: {feature_dim} -> {num_classes}")
+            logger.info("Linear Classifier: %s -> %s", feature_dim, num_classes)
         else:
             # Simple MLP classifier (2 layers)
             self.classifier = nn.Sequential(
@@ -302,7 +305,7 @@ class DINOv2Classifier(nn.Module):
                 nn.Dropout(dropout),
                 nn.Linear(hidden_dim, num_classes)
             )
-            print(f"MLP Classifier: {feature_dim} -> {hidden_dim} -> {num_classes}")
+            logger.info("MLP Classifier: %s -> %s -> %s", feature_dim, hidden_dim, num_classes)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -394,13 +397,13 @@ def get_dinov2_transforms(image_size: int = 224, augment_strength: str = 'weak')
 
 if __name__ == "__main__":
     # Quick test
-    print("Testing DINOv2 Encoder...")
+    logger.info("Testing DINOv2 Encoder...")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    logger.info("Using device: %s", device)
     
     # Test 1: Standard classifier
-    print("\n=== Test 1: Standard Classifier ===")
+    logger.info("=== Test 1: Standard Classifier ===")
     model = DINOv2Classifier(
         num_classes=2,
         model_name='dinov2_vitl14',
@@ -410,11 +413,11 @@ if __name__ == "__main__":
     
     dummy_input = torch.randn(2, 3, 224, 224).to(device)
     output = model(dummy_input)
-    print(f"Input shape: {dummy_input.shape}")
-    print(f"Output shape: {output.shape}")
+    logger.info("Input shape: %s", dummy_input.shape)
+    logger.info("Output shape: %s", output.shape)
     
     # Test 2: Enhanced classifier with multi-layer features
-    print("\n=== Test 2: Enhanced Classifier with Multi-Layer Features ===")
+    logger.info("=== Test 2: Enhanced Classifier with Multi-Layer Features ===")
     model_enhanced = DINOv2Classifier(
         num_classes=2,
         model_name='dinov2_vitl14',
@@ -428,7 +431,6 @@ if __name__ == "__main__":
     ).to(device)
     
     output_enhanced = model_enhanced(dummy_input)
-    print(f"Input shape: {dummy_input.shape}")
-    print(f"Output shape: {output_enhanced.shape}")
-    
-    print("\nAll tests passed!")
+    logger.info("Input shape: %s", dummy_input.shape)
+    logger.info("Output shape: %s", output_enhanced.shape)
+    logger.info("All tests passed!")

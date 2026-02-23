@@ -17,6 +17,7 @@ from PIL import Image
 from modules.mae_encoder import MAEClassifier, get_mae_transforms
 from utils.plot_graph import plot_graph
 from utils.utils import calculate_accuracy
+from utils.logging_config import setup_logging
 
 
 # ============ Dataset for Image Classification ============
@@ -157,6 +158,7 @@ def validate(model, val_loader, criterion, device):
 
 
 def main():
+    setup_logging(log_dir="logs")
     load_dotenv("configs/.env")
 
     device = (

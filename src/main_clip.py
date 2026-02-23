@@ -15,6 +15,7 @@ from sklearn.model_selection import train_test_split
 from modules.clip_encoder import CLIPClassifier, get_clip_transforms
 from utils.plot_graph import plot_graph
 from utils.utils import calculate_accuracy
+from utils.logging_config import setup_logging
 
 # Reuse ImageDataset from main_dinov2 (same folder structure)
 from main_dinov2 import ImageDataset
@@ -113,6 +114,7 @@ def validate(model, val_loader, criterion, device):
 
 
 def main():
+    setup_logging(log_dir="logs")
     from dotenv import load_dotenv
     load_dotenv("configs/.env")
 

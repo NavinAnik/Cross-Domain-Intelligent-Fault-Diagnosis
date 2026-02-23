@@ -15,12 +15,14 @@ _WANDB_RUN = None
 def is_wandb_available() -> bool:
     """Return True if wandb is installed and not disabled by env."""
     import os
+
     if os.getenv("WANDB_DISABLED", "").lower() in ("true", "1", "yes"):
         return False
     if os.getenv("WANDB_MODE", "").lower() == "disabled":
         return False
     try:
         import wandb
+
         return True
     except ImportError:
         return False
@@ -51,7 +53,17 @@ def init_wandb(
     global _WANDB_RUN
     if not is_wandb_available():
         return False
+    import os
     import wandb
+
+    # Get API key from environment variable
+    api_key = os.getenv("WANDB_API_KEY")
+    if not api_key:
+        # No API key in env - skip wandb silently instead of prompting
+        print("WANDB_API_KEY not set - skipping wandb logging")
+        return False
+    # Login with the API key from env (no interactive prompt)
+    wandb.login(key=api_key, relogin=False)
     kwargs = {"project": project, "reinit": reinit}
     if config is not None:
         kwargs["config"] = config
@@ -65,7 +77,9 @@ def init_wandb(
     return _WANDB_RUN is not None
 
 
-def log_metrics(metrics: Dict[str, Any], step: Optional[int] = None, commit: bool = True) -> None:
+def log_metrics(
+    metrics: Dict[str, Any], step: Optional[int] = None, commit: bool = True
+) -> None:
     """
     Log metrics to the current wandb run. No-op if wandb is disabled or not initialized.
 
@@ -77,6 +91,7 @@ def log_metrics(metrics: Dict[str, Any], step: Optional[int] = None, commit: boo
     if not is_wandb_available():
         return
     import wandb
+
     if wandb.run is None:
         return
     kwargs = {}
@@ -88,9 +103,11 @@ def log_metrics(metrics: Dict[str, Any], step: Optional[int] = None, commit: boo
 def log_artifact(path: str, name: str, artifact_type: str = "model") -> None:
     """Log a file or directory as a wandb artifact. No-op if wandb disabled."""
     import os as _os
+
     if not is_wandb_available():
         return
     import wandb
+
     if wandb.run is None:
         return
     artifact = wandb.Artifact(name=name, type=artifact_type)
@@ -106,5 +123,6 @@ def finish_wandb() -> None:
     if not is_wandb_available():
         return
     import wandb
+
     if wandb.run is not None:
         wandb.finish()
