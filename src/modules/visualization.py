@@ -1084,3 +1084,367 @@ def plot_architecture_diagram(
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close()
+
+
+# ---------------------------------------------------------------------------
+# Enhanced interpretability visualizations for Q1 publication
+# ---------------------------------------------------------------------------
+
+def plot_tsne_with_decision_boundary(
+    embeddings: np.ndarray,
+    labels: np.ndarray,
+    predictions: np.ndarray,
+    output_path: str,
+    title: str = "t-SNE with Decision Regions",
+    class_names: Optional[List[str]] = None,
+    figsize: Tuple[int, int] = (12, 10),
+    perplexity: float = 30.0,
+    random_state: int = 42,
+) -> None:
+    """
+    t-SNE visualization showing misclassified samples and approximate decision regions.
+    Useful for understanding model behavior at class boundaries.
+    """
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    
+    X = np.asarray(embeddings, dtype=np.float64)
+    y = np.asarray(labels).ravel()
+    preds = np.asarray(predictions).ravel()
+    
+    perplexity_actual = min(perplexity, max(5, X.shape[0] // 3))
+    tsne = TSNE(n_components=2, perplexity=perplexity_actual, random_state=random_state)
+    coords = tsne.fit_transform(X)
+    
+    correct = y == preds
+    misclassified = ~correct
+    
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    if class_names is None:
+        class_names = ["Normal", "Abnormal"]
+    
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))
+    
+    for i, label in enumerate([0, 1]):
+        mask = (y == label) & correct
+        ax.scatter(
+            coords[mask, 0], coords[mask, 1],
+            c=[colors[i]], label=f"{class_names[i]} (correct)",
+            alpha=0.6, s=30, marker='o'
+        )
+    
+    for i, label in enumerate([0, 1]):
+        mask = (y == label) & misclassified
+        ax.scatter(
+            coords[mask, 0], coords[mask, 1],
+            c=[colors[i]], label=f"{class_names[i]} (misclassified)",
+            alpha=0.9, s=80, marker='x', linewidths=2
+        )
+    
+    ax.set_title(title)
+    ax.set_xlabel("t-SNE 1")
+    ax.set_ylabel("t-SNE 2")
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    
+    n_correct = correct.sum()
+    n_total = len(y)
+    accuracy = n_correct / n_total
+    ax.text(
+        0.02, 0.98, f"Accuracy: {accuracy:.2%} ({n_correct}/{n_total})",
+        transform=ax.transAxes, fontsize=10, verticalalignment='top',
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8)
+    )
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def plot_class_distribution_analysis(
+    embeddings: np.ndarray,
+    labels: np.ndarray,
+    output_path: str,
+    class_names: Optional[List[str]] = None,
+    figsize: Tuple[int, int] = (14, 5),
+) -> Dict[str, float]:
+    """
+    Analyze and visualize class distributions in embedding space.
+    
+    Computes:
+    - Intra-class variance (tightness of clusters)
+    - Inter-class distance (separation between classes)
+    - Silhouette score
+    
+    Returns metrics dict for inclusion in publication tables.
+    """
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    
+    from sklearn.metrics import silhouette_score
+    
+    X = np.asarray(embeddings)
+    y = np.asarray(labels).ravel()
+    
+    if class_names is None:
+        class_names = ["Normal", "Abnormal"]
+    
+    unique_labels = np.unique(y)
+    centroids = {}
+    intra_class_var = {}
+    
+    for label in unique_labels:
+        mask = y == label
+        class_embeddings = X[mask]
+        centroid = class_embeddings.mean(axis=0)
+        centroids[label] = centroid
+        
+        distances = np.linalg.norm(class_embeddings - centroid, axis=1)
+        intra_class_var[label] = distances.mean()
+    
+    if len(centroids) >= 2:
+        inter_class_dist = np.linalg.norm(centroids[0] - centroids[1])
+    else:
+        inter_class_dist = 0.0
+    
+    try:
+        sil_score = silhouette_score(X, y)
+    except:
+        sil_score = 0.0
+    
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    
+    ax1 = axes[0]
+    vars_list = [intra_class_var.get(l, 0) for l in unique_labels]
+    bars = ax1.bar([class_names[l] for l in unique_labels], vars_list, color=['#4A90D9', '#E24A4A'])
+    ax1.set_ylabel("Mean Distance to Centroid")
+    ax1.set_title("Intra-class Variance\n(lower = tighter clusters)")
+    for bar, val in zip(bars, vars_list):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                 f'{val:.3f}', ha='center', fontsize=10)
+    
+    ax2 = axes[1]
+    ax2.bar(["Inter-class"], [inter_class_dist], color='#50C878')
+    ax2.set_ylabel("Distance")
+    ax2.set_title("Inter-class Distance\n(higher = better separation)")
+    ax2.text(0, inter_class_dist + 0.01, f'{inter_class_dist:.3f}', ha='center', fontsize=10)
+    
+    ax3 = axes[2]
+    colors = ['#E24A4A' if sil_score < 0.3 else '#FFD700' if sil_score < 0.5 else '#50C878']
+    ax3.bar(["Silhouette"], [sil_score], color=colors)
+    ax3.set_ylabel("Score")
+    ax3.set_ylim(-1, 1)
+    ax3.axhline(y=0.5, color='green', linestyle='--', alpha=0.5, label='Good threshold')
+    ax3.axhline(y=0.3, color='orange', linestyle='--', alpha=0.5, label='Weak threshold')
+    ax3.set_title("Silhouette Score\n(higher = better clustering)")
+    ax3.text(0, sil_score + 0.03, f'{sil_score:.3f}', ha='center', fontsize=10)
+    ax3.legend(loc='lower right', fontsize=8)
+    
+    fig.suptitle("Embedding Space Analysis", fontsize=12, y=1.02)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    
+    metrics = {
+        "intra_class_var_normal": intra_class_var.get(0, 0),
+        "intra_class_var_abnormal": intra_class_var.get(1, 0),
+        "inter_class_distance": inter_class_dist,
+        "silhouette_score": sil_score,
+        "separation_ratio": inter_class_dist / (sum(vars_list) / len(vars_list) + 1e-8),
+    }
+    
+    return metrics
+
+
+def plot_attention_analysis_grid(
+    attention_maps: List[np.ndarray],
+    images: List[np.ndarray],
+    labels: List[int],
+    predictions: List[int],
+    output_path: str,
+    class_names: Optional[List[str]] = None,
+    n_samples: int = 8,
+    figsize: Tuple[int, int] = (16, 8),
+) -> None:
+    """
+    Create a grid showing attention maps for correct and incorrect predictions.
+    Useful for interpretability analysis in publications.
+    """
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    
+    if class_names is None:
+        class_names = ["Normal", "Abnormal"]
+    
+    labels = np.array(labels)
+    predictions = np.array(predictions)
+    correct_mask = labels == predictions
+    
+    correct_idx = np.where(correct_mask)[0]
+    incorrect_idx = np.where(~correct_mask)[0]
+    
+    n_correct = min(n_samples // 2, len(correct_idx))
+    n_incorrect = min(n_samples // 2, len(incorrect_idx))
+    
+    if n_correct > 0:
+        correct_samples = np.random.choice(correct_idx, n_correct, replace=False)
+    else:
+        correct_samples = []
+    
+    if n_incorrect > 0:
+        incorrect_samples = np.random.choice(incorrect_idx, n_incorrect, replace=False)
+    else:
+        incorrect_samples = []
+    
+    n_total = len(correct_samples) + len(incorrect_samples)
+    if n_total == 0:
+        return
+    
+    ncols = 4
+    nrows = (n_total + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+    axes = axes.ravel() if n_total > 1 else [axes]
+    
+    all_samples = list(correct_samples) + list(incorrect_samples)
+    
+    for i, idx in enumerate(all_samples):
+        ax = axes[i]
+        
+        img = images[idx]
+        if img.ndim == 3 and img.shape[0] in (1, 3):
+            img = np.transpose(img, (1, 2, 0))
+        if img.max() > 1:
+            img = img / 255.0
+        
+        attn = attention_maps[idx]
+        if attn.shape != img.shape[:2]:
+            from scipy.ndimage import zoom
+            scale = (img.shape[0] / attn.shape[0], img.shape[1] / attn.shape[1])
+            attn = zoom(attn, scale, order=1)
+        
+        ax.imshow(img)
+        ax.imshow(attn, cmap='jet', alpha=0.4)
+        
+        true_label = class_names[labels[idx]]
+        pred_label = class_names[predictions[idx]]
+        is_correct = labels[idx] == predictions[idx]
+        
+        color = 'green' if is_correct else 'red'
+        title = f"True: {true_label}\nPred: {pred_label}"
+        ax.set_title(title, color=color, fontsize=9)
+        ax.axis('off')
+    
+    for j in range(len(all_samples), len(axes)):
+        axes[j].set_visible(False)
+    
+    fig.suptitle("Attention Analysis: Correct vs Misclassified", fontsize=12, y=1.02)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+
+
+def generate_interpretability_report(
+    model: nn.Module,
+    val_loader,
+    output_dir: str,
+    device: torch.device = None,
+    class_names: Optional[List[str]] = None,
+    n_grad_cam_samples: int = 16,
+) -> Dict[str, Any]:
+    """
+    Generate comprehensive interpretability report for publication.
+    
+    Creates:
+    1. t-SNE visualization with decision analysis
+    2. Class distribution metrics
+    3. Grad-CAM attention analysis grid
+    4. Embedding space statistics
+    
+    Returns dict with all computed metrics.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    model.eval()
+    
+    all_embeddings = []
+    all_labels = []
+    all_predictions = []
+    all_images = []
+    all_attention_maps = []
+    
+    with torch.no_grad():
+        for batch_idx, (x, y) in enumerate(val_loader):
+            x = x.to(device)
+            
+            if hasattr(model, 'encoder'):
+                emb = model.encoder(x)
+            else:
+                emb = model(x)
+            
+            if emb.dim() > 2:
+                emb = emb.mean(dim=list(range(1, emb.dim() - 1)))
+            
+            logits = model(x) if emb.dim() == 2 else emb
+            preds = logits.argmax(dim=1)
+            
+            all_embeddings.append(emb.cpu().numpy())
+            all_labels.extend(y.numpy().tolist())
+            all_predictions.extend(preds.cpu().numpy().tolist())
+            
+            if batch_idx < n_grad_cam_samples // x.size(0) + 1:
+                for i in range(min(x.size(0), n_grad_cam_samples - len(all_images))):
+                    img = x[i].cpu().numpy()
+                    all_images.append(img)
+                    
+                    try:
+                        cam = compute_grad_cam_vit(model, x[i:i+1])
+                        all_attention_maps.append(cam)
+                    except:
+                        all_attention_maps.append(np.zeros((14, 14)))
+    
+    embeddings = np.concatenate(all_embeddings, axis=0)
+    labels = np.array(all_labels)
+    predictions = np.array(all_predictions)
+    
+    plot_tsne_with_decision_boundary(
+        embeddings, labels, predictions,
+        os.path.join(output_dir, "tsne_decision_boundary.png"),
+        class_names=class_names
+    )
+    
+    distribution_metrics = plot_class_distribution_analysis(
+        embeddings, labels,
+        os.path.join(output_dir, "class_distribution_analysis.png"),
+        class_names=class_names
+    )
+    
+    if all_images and all_attention_maps:
+        plot_attention_analysis_grid(
+            all_attention_maps[:n_grad_cam_samples],
+            all_images[:n_grad_cam_samples],
+            labels[:n_grad_cam_samples].tolist(),
+            predictions[:n_grad_cam_samples].tolist(),
+            os.path.join(output_dir, "attention_analysis_grid.png"),
+            class_names=class_names
+        )
+    
+    plot_tsne_umap(
+        embeddings, labels,
+        output_dir=output_dir,
+        class_names=class_names
+    )
+    
+    accuracy = (labels == predictions).mean()
+    
+    report = {
+        "accuracy": accuracy,
+        "n_samples": len(labels),
+        **distribution_metrics,
+    }
+    
+    import json
+    with open(os.path.join(output_dir, "interpretability_metrics.json"), "w") as f:
+        json.dump(report, f, indent=2)
+    
+    return report

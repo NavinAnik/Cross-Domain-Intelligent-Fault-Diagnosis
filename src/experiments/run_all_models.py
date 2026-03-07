@@ -534,6 +534,7 @@ def get_default_config(model_name: str) -> Dict[str, Any]:
     if model_name == "siglip2":
         defaults["image_size"] = 224  # google/siglip2-base-patch16-224
     if model_name == "metaclip2":
+        defaults["image_size"] = 224  # MetaCLIP 2 expects 224x224 only
         defaults["batch_size"] = min(defaults["batch_size"], 8)  # 2B params, high VRAM
     if model_name in ("rtdetrv4_l", "rtdetrv4_l_distill"):
         defaults["image_size"] = 640  # RT-DETR default input size

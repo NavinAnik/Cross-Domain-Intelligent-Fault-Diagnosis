@@ -45,14 +45,13 @@ class MetaCLIP2Encoder(nn.Module):
             torch_dtype=dtype,
             attn_implementation="sdpa" if hasattr(torch.nn.functional, "scaled_dot_product_attention") else "eager",
         )
-        # CLIP-style: use get_image_features; config has vision_config
-        if hasattr(self.backbone.config, "vision_config"):
-            self.feature_dim = getattr(
-                self.backbone.config.vision_config, "hidden_size",
-                self.backbone.config.projection_dim if hasattr(self.backbone.config, "projection_dim") else 1024,
-            )
-        else:
-            self.feature_dim = getattr(self.backbone.config, "projection_dim", 1024)
+        # get_image_features returns pooler_output after visual_projection (hidden_size -> projection_dim)
+        # Use projection_dim, not vision hidden_size, since we use the projected features
+        self.feature_dim = getattr(
+            self.backbone.config, "projection_dim",
+            getattr(self.backbone.config.vision_config, "projection_dim", 1024)
+            if hasattr(self.backbone.config, "vision_config") else 1024,
+        )
         print(f"Loaded {model_id} with feature dim {self.feature_dim}")
 
         if freeze_backbone:
@@ -65,14 +64,15 @@ class MetaCLIP2Encoder(nn.Module):
         self.backbone.eval()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # MetaCLIP 2 expects pixel_values; get_image_features returns pooled vision features
+        # MetaCLIP 2 expects pixel_values; get_image_features returns BaseModelOutputWithPooling
         if hasattr(self.backbone, "get_image_features"):
             with torch.amp.autocast("cuda", enabled=(self.use_fp16 and torch.cuda.is_available())):
                 if self.freeze_backbone:
                     with torch.no_grad():
-                        features = self.backbone.get_image_features(pixel_values=x)
+                        out = self.backbone.get_image_features(pixel_values=x)
                 else:
-                    features = self.backbone.get_image_features(pixel_values=x)
+                    out = self.backbone.get_image_features(pixel_values=x)
+            features = out.pooler_output
         else:
             outputs = self.backbone(pixel_values=x)
             features = outputs.get("pooler_output") or outputs.get("last_hidden_state", outputs)[:, 0, :]

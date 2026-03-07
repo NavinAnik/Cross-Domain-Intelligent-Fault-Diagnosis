@@ -307,6 +307,22 @@ class DINOv2Classifier(nn.Module):
             )
             logger.info("MLP Classifier: %s -> %s -> %s", feature_dim, hidden_dim, num_classes)
     
+    def get_features(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Extract features before classification.
+        
+        Args:
+            x: Input images (B, 3, H, W)
+        
+        Returns:
+            Features of shape (B, feature_dim)
+        """
+        if self.use_multi_layer_features:
+            features = self.encoder.get_intermediate_features(x, n_last_blocks=self.n_last_blocks)
+        else:
+            features = self.encoder(x)
+        return features
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass.
@@ -318,10 +334,7 @@ class DINOv2Classifier(nn.Module):
             Logits of shape (B, num_classes)
         """
         # Extract features
-        if self.use_multi_layer_features:
-            features = self.encoder.get_intermediate_features(x, n_last_blocks=self.n_last_blocks)
-        else:
-            features = self.encoder(x)
+        features = self.get_features(x)
         
         # Classify
         logits = self.classifier(features)
