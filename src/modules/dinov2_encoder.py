@@ -74,7 +74,39 @@ class DINOv2Encoder(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = False
         self.backbone.eval()
-    
+
+    def partial_unfreeze(self, n_blocks: int = 4):
+        """Unfreeze the last n transformer blocks for fine-tuning.
+
+        Also unfreezes the final LayerNorm. Keeps all earlier layers frozen.
+        """
+        self.freeze_backbone = False
+
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+
+        blocks = self.backbone.blocks
+        total_blocks = len(blocks)
+        for i in range(max(0, total_blocks - n_blocks), total_blocks):
+            for param in blocks[i].parameters():
+                param.requires_grad = True
+
+        if hasattr(self.backbone, 'norm'):
+            for param in self.backbone.norm.parameters():
+                param.requires_grad = True
+
+        trainable = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.backbone.parameters())
+        logger.info(
+            "Partially unfroze last %d/%d blocks: %d/%d params trainable (%.1f%%)",
+            n_blocks, total_blocks, trainable, total, 100.0 * trainable / total
+        )
+
+    def get_backbone_param_groups(self, lr: float = 1e-5):
+        """Return only the trainable backbone parameters as a param group."""
+        params = [p for p in self.backbone.parameters() if p.requires_grad]
+        return [{"params": params, "lr": lr}] if params else []
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Extract features from images.
@@ -90,15 +122,14 @@ class DINOv2Encoder(nn.Module):
         if self.use_fp16:
             x = x.half()
         
-        # DINOv2 returns the [CLS] token features by default (autocast only when CUDA available)
         with torch.amp.autocast("cuda", enabled=(self.use_fp16 and torch.cuda.is_available())):
-            if self.freeze_backbone:
+            has_trainable = any(p.requires_grad for p in self.backbone.parameters())
+            if not has_trainable:
                 with torch.no_grad():
                     features = self.backbone(x)
             else:
                 features = self.backbone(x)
-        
-        # Convert back to FP32 for classifier
+
         return features.float()
     
     def get_intermediate_features(self, x: torch.Tensor, n_last_blocks: int = 4):
@@ -132,10 +163,16 @@ class DINOv2Encoder(nn.Module):
         return cls_tokens.float()
     
     def train(self, mode: bool = True):
-        """Override train to keep backbone frozen if freeze_backbone is True."""
+        """Override train to keep frozen layers in eval mode."""
         super().train(mode)
-        if self.freeze_backbone:
+        has_trainable = any(p.requires_grad for p in self.backbone.parameters())
+        if not has_trainable:
             self.backbone.eval()
+        elif mode:
+            for i, block in enumerate(self.backbone.blocks):
+                block_trainable = any(p.requires_grad for p in block.parameters())
+                if not block_trainable:
+                    block.eval()
         return self
 
 
@@ -340,6 +377,16 @@ class DINOv2Classifier(nn.Module):
         logits = self.classifier(features)
         return logits
     
+    def partial_unfreeze(self, n_blocks: int = 4):
+        """Unfreeze the last n transformer blocks of the encoder."""
+        self.encoder.partial_unfreeze(n_blocks)
+
+    def get_param_groups(self, backbone_lr: float = 1e-5, head_lr: float = 1e-3):
+        """Return optimizer param groups with differential learning rates."""
+        groups = self.encoder.get_backbone_param_groups(lr=backbone_lr)
+        groups.append({"params": list(self.classifier.parameters()), "lr": head_lr})
+        return groups
+
     @property
     def feature_dim(self):
         return self.encoder.feature_dim

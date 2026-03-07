@@ -190,19 +190,12 @@ class PrototypeAlignmentLoss(nn.Module):
 class AsymmetricFocalContrastiveLoss(nn.Module):
     """
     Full AFCL Loss combining focal, contrastive, and alignment components.
-    
-    L_AFCL = L_focal + λ_contrast * L_contrastive + λ_align * L_alignment
-    
-    Args:
-        feature_dim: Dimension of feature vectors for alignment.
-        num_classes: Number of output classes.
-        focal_alpha: Class weights for focal loss [normal_weight, abnormal_weight].
-        focal_gamma: Focusing parameter for focal loss.
-        temperature: Temperature for contrastive loss.
-        abnormal_weight: Extra weight for abnormal class pairs.
-        lambda_contrast: Weight for contrastive loss term.
-        lambda_align: Weight for alignment loss term.
-        margin: Margin for prototype alignment.
+
+    L_AFCL = L_focal + w(t)*λ_contrast * L_contrastive + w(t)*λ_align * L_alignment
+
+    where w(t) is a warmup multiplier that ramps from 0 to 1 over
+    ``warmup_epochs`` so the contrastive / alignment terms don't destabilise
+    early training when features are still adapting.
     """
 
     def __init__(
@@ -211,41 +204,53 @@ class AsymmetricFocalContrastiveLoss(nn.Module):
         num_classes: int = 2,
         focal_alpha: Optional[list] = None,
         focal_gamma: float = 2.0,
-        temperature: float = 0.07,
+        temperature: float = 0.5,
         abnormal_weight: float = 2.0,
-        lambda_contrast: float = 0.5,
-        lambda_align: float = 0.1,
+        lambda_contrast: float = 0.1,
+        lambda_align: float = 0.05,
         margin: float = 0.5,
         abnormal_class: int = 1,
+        warmup_epochs: int = 10,
     ):
         super().__init__()
-        
+
         alpha = None
         if focal_alpha is not None:
             alpha = torch.tensor(focal_alpha, dtype=torch.float32)
-        
+
         self.focal = FocalLossComponent(
             alpha=alpha,
             gamma=focal_gamma,
             reduction="mean",
         )
-        
+
         self.contrastive = AsymmetricContrastiveLoss(
             temperature=temperature,
             abnormal_weight=abnormal_weight,
             abnormal_class=abnormal_class,
         )
-        
+
         self.alignment = PrototypeAlignmentLoss(
             feature_dim=feature_dim,
             num_classes=num_classes,
             margin=margin,
         )
-        
+
         self.lambda_contrast = lambda_contrast
         self.lambda_align = lambda_align
-        
+        self.warmup_epochs = warmup_epochs
+        self._current_epoch = 0
+
         self._last_losses = {}
+
+    def set_epoch(self, epoch: int):
+        """Call at the start of each epoch so warmup weight is up to date."""
+        self._current_epoch = epoch
+
+    def _warmup_weight(self) -> float:
+        if self.warmup_epochs <= 0:
+            return 1.0
+        return min(1.0, self._current_epoch / self.warmup_epochs)
 
     def forward(
         self,
@@ -254,38 +259,29 @@ class AsymmetricFocalContrastiveLoss(nn.Module):
         labels: torch.Tensor,
         return_components: bool = False,
     ) -> torch.Tensor:
-        """
-        Compute AFCL loss.
-        
-        Args:
-            features: (B, D) feature vectors from encoder.
-            logits: (B, C) classification logits.
-            labels: (B,) ground truth labels.
-            return_components: If True, return individual loss components.
-        
-        Returns:
-            Total AFCL loss (and optionally component losses).
-        """
         l_focal = self.focal(logits, labels)
-        l_contrastive = self.contrastive(features, labels)
-        l_alignment = self.alignment(features, labels)
-        
+
+        w = self._warmup_weight()
+        l_contrastive = self.contrastive(features, labels) if w > 0 else torch.tensor(0.0, device=logits.device)
+        l_alignment = self.alignment(features, labels) if w > 0 else torch.tensor(0.0, device=logits.device)
+
         total_loss = (
             l_focal
-            + self.lambda_contrast * l_contrastive
-            + self.lambda_align * l_alignment
+            + w * self.lambda_contrast * l_contrastive
+            + w * self.lambda_align * l_alignment
         )
-        
+
         self._last_losses = {
             "focal": l_focal.item(),
-            "contrastive": l_contrastive.item(),
-            "alignment": l_alignment.item(),
+            "contrastive": l_contrastive.item() if torch.is_tensor(l_contrastive) else 0.0,
+            "alignment": l_alignment.item() if torch.is_tensor(l_alignment) else 0.0,
             "total": total_loss.item(),
+            "warmup_weight": w,
         }
-        
+
         if return_components:
             return total_loss, l_focal, l_contrastive, l_alignment
-        
+
         return total_loss
 
     def get_last_losses(self) -> dict:
@@ -300,7 +296,7 @@ class AsymmetricFocalContrastiveLoss(nn.Module):
 class AFCLWithHardMining(AsymmetricFocalContrastiveLoss):
     """
     AFCL with hard negative mining for improved separation.
-    
+
     Extends AFCL to:
     - Identify hard negatives (normal samples close to abnormal cluster)
     - Up-weight loss contribution from hard samples
@@ -313,14 +309,15 @@ class AFCLWithHardMining(AsymmetricFocalContrastiveLoss):
         num_classes: int = 2,
         focal_alpha: Optional[list] = None,
         focal_gamma: float = 2.0,
-        temperature: float = 0.07,
+        temperature: float = 0.5,
         abnormal_weight: float = 2.0,
-        lambda_contrast: float = 0.5,
-        lambda_align: float = 0.1,
+        lambda_contrast: float = 0.1,
+        lambda_align: float = 0.05,
         margin: float = 0.5,
         hard_negative_ratio: float = 0.3,
         hard_weight: float = 2.0,
         abnormal_class: int = 1,
+        warmup_epochs: int = 10,
     ):
         super().__init__(
             feature_dim=feature_dim,
@@ -333,8 +330,9 @@ class AFCLWithHardMining(AsymmetricFocalContrastiveLoss):
             lambda_align=lambda_align,
             margin=margin,
             abnormal_class=abnormal_class,
+            warmup_epochs=warmup_epochs,
         )
-        
+
         self.hard_negative_ratio = hard_negative_ratio
         self.hard_weight = hard_weight
         self.abnormal_class = abnormal_class
@@ -387,43 +385,45 @@ class AFCLWithHardMining(AsymmetricFocalContrastiveLoss):
         labels: torch.Tensor,
         return_components: bool = False,
     ) -> torch.Tensor:
-        hard_mask = self._identify_hard_negatives(features, labels)
-        
+        hard_mask = self._identify_hard_negatives(features.detach(), labels)
+
         sample_weights = torch.ones(labels.size(0), device=labels.device)
         sample_weights[hard_mask] = self.hard_weight
         sample_weights[labels == self.abnormal_class] = self.hard_weight
-        
+
         ce = F.cross_entropy(logits, labels, reduction="none")
         pt = torch.exp(-ce)
-        
+
         if self.focal.alpha is not None:
             alpha_t = self.focal.alpha.to(logits.device)[labels]
         else:
             alpha_t = 1.0
-        
+
         focal_weight = alpha_t * (1 - pt) ** self.focal.gamma
         l_focal = (focal_weight * sample_weights * ce).mean()
-        
-        l_contrastive = self.contrastive(features, labels)
-        l_alignment = self.alignment(features, labels)
-        
+
+        w = self._warmup_weight()
+        l_contrastive = self.contrastive(features, labels) if w > 0 else torch.tensor(0.0, device=logits.device)
+        l_alignment = self.alignment(features, labels) if w > 0 else torch.tensor(0.0, device=logits.device)
+
         total_loss = (
             l_focal
-            + self.lambda_contrast * l_contrastive
-            + self.lambda_align * l_alignment
+            + w * self.lambda_contrast * l_contrastive
+            + w * self.lambda_align * l_alignment
         )
-        
+
         self._last_losses = {
             "focal": l_focal.item(),
-            "contrastive": l_contrastive.item(),
-            "alignment": l_alignment.item(),
+            "contrastive": l_contrastive.item() if torch.is_tensor(l_contrastive) else 0.0,
+            "alignment": l_alignment.item() if torch.is_tensor(l_alignment) else 0.0,
             "total": total_loss.item(),
             "hard_negatives": hard_mask.sum().item(),
+            "warmup_weight": w,
         }
-        
+
         if return_components:
             return total_loss, l_focal, l_contrastive, l_alignment
-        
+
         return total_loss
 
     def get_hard_negative_stats(self) -> dict:
@@ -436,37 +436,38 @@ def create_afcl_loss(
     num_classes: int = 2,
     imbalance_ratio: float = 5.0,
     use_hard_mining: bool = True,
+    warmup_epochs: int = 10,
+    temperature: float = 0.5,
+    lambda_contrast: float = 0.1,
+    lambda_align: float = 0.05,
 ) -> nn.Module:
     """
     Factory function to create appropriately configured AFCL loss.
-    
-    Args:
-        feature_dim: Feature dimension from encoder.
-        num_classes: Number of classes.
-        imbalance_ratio: Ratio of normal to abnormal samples.
-        use_hard_mining: Whether to use hard negative mining.
-    
-    Returns:
-        Configured AFCL loss module.
+
+    Default temperature (0.5) and lambda values have been calibrated to
+    avoid gradient explosions when the backbone is partially frozen.
+    The warmup schedule ramps the contrastive / alignment terms from 0
+    to their full weight over ``warmup_epochs``.
     """
     normal_weight = 1.0 / (1.0 + imbalance_ratio)
     abnormal_weight = imbalance_ratio / (1.0 + imbalance_ratio)
     focal_alpha = [normal_weight, abnormal_weight]
-    
+
     gamma = min(3.0, 1.5 + 0.3 * math.log(imbalance_ratio + 1))
-    
+
     if use_hard_mining:
         return AFCLWithHardMining(
             feature_dim=feature_dim,
             num_classes=num_classes,
             focal_alpha=focal_alpha,
             focal_gamma=gamma,
-            temperature=0.07,
+            temperature=temperature,
             abnormal_weight=2.0,
-            lambda_contrast=0.5,
-            lambda_align=0.1,
+            lambda_contrast=lambda_contrast,
+            lambda_align=lambda_align,
             hard_negative_ratio=0.3,
             hard_weight=2.0,
+            warmup_epochs=warmup_epochs,
         )
     else:
         return AsymmetricFocalContrastiveLoss(
@@ -474,8 +475,9 @@ def create_afcl_loss(
             num_classes=num_classes,
             focal_alpha=focal_alpha,
             focal_gamma=gamma,
-            temperature=0.07,
+            temperature=temperature,
             abnormal_weight=2.0,
-            lambda_contrast=0.5,
-            lambda_align=0.1,
+            lambda_contrast=lambda_contrast,
+            lambda_align=lambda_align,
+            warmup_epochs=warmup_epochs,
         )

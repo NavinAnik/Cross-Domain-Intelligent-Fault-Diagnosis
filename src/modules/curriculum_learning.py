@@ -35,15 +35,15 @@ class CurriculumScheduler:
     def __init__(
         self,
         total_epochs: int,
-        phase1_ratio: float = 0.3,
-        phase2_ratio: float = 0.4,
+        phase1_ratio: float = 0.4,
+        phase2_ratio: float = 0.35,
         hard_negative_percentiles: List[float] = None,
     ):
         """
         Args:
             total_epochs: Total training epochs.
-            phase1_ratio: Fraction of epochs for phase 1 (balanced).
-            phase2_ratio: Fraction of epochs for phase 2 (gradual).
+            phase1_ratio: Fraction of epochs for phase 1 (balanced). Default 0.4.
+            phase2_ratio: Fraction of epochs for phase 2 (gradual). Default 0.35.
             hard_negative_percentiles: Percentiles for hard negative selection.
         """
         self.total_epochs = total_epochs
@@ -253,9 +253,12 @@ class CurriculumTrainer:
         learning_rate: float = 1e-4,
         use_amp: bool = True,
         embedding_update_interval: int = 5,
-        early_stopping_patience: int = 10,
+        early_stopping_patience: int = 20,
         accumulation_steps: int = 1,
         use_wandb: bool = False,
+        phase1_ratio: float = 0.4,
+        phase2_ratio: float = 0.35,
+        param_groups: Optional[list] = None,
     ):
         self.model = model
         self.train_dataset = train_dataset
@@ -269,27 +272,34 @@ class CurriculumTrainer:
         self.early_stopping_patience = early_stopping_patience
         self.accumulation_steps = accumulation_steps
         self.use_wandb = use_wandb
-        
+
         if criterion is None:
             from modules.focal_loss import FocalLoss
             criterion = FocalLoss(alpha=[0.1, 0.9], gamma=3.0)
         self.criterion = criterion
-        
+
         if optimizer is None:
-            optimizer = torch.optim.AdamW(
-                [p for p in model.parameters() if p.requires_grad],
-                lr=learning_rate,
-                weight_decay=0.05,
-            )
+            if param_groups is not None:
+                optimizer = torch.optim.AdamW(param_groups, weight_decay=0.05)
+            else:
+                optimizer = torch.optim.AdamW(
+                    [p for p in model.parameters() if p.requires_grad],
+                    lr=learning_rate,
+                    weight_decay=0.05,
+                )
         self.optimizer = optimizer
         self.lr_scheduler = scheduler
-        
+
         if self.lr_scheduler is None:
             self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer, T_max=total_epochs
             )
 
-        self.curriculum_scheduler = CurriculumScheduler(total_epochs)
+        self.curriculum_scheduler = CurriculumScheduler(
+            total_epochs,
+            phase1_ratio=phase1_ratio,
+            phase2_ratio=phase2_ratio,
+        )
         self.curriculum_sampler = CurriculumSampler(
             train_dataset, labels, self.curriculum_scheduler
         )
@@ -490,6 +500,9 @@ class CurriculumTrainer:
         for epoch in range(1, self.total_epochs + 1):
             phase = self.curriculum_scheduler.get_phase(epoch)
 
+            if hasattr(self.criterion, "set_epoch"):
+                self.criterion.set_epoch(epoch)
+
             if epoch == 1 or (epoch % self.embedding_update_interval == 0 and phase != "balanced"):
                 logger.info("Updating embeddings for hard negative mining...")
                 try:
@@ -550,14 +563,15 @@ class CurriculumTrainer:
                 val_metrics["abnormal_recall"], val_metrics["mcc"]
             )
 
+            bal_acc = val_metrics["balanced_accuracy"]
             abnormal_recall = val_metrics["abnormal_recall"]
-            if abnormal_recall > self.best_abnormal_recall:
+            if bal_acc > self.best_val_recall:
+                self.best_val_recall = bal_acc
                 self.best_abnormal_recall = abnormal_recall
-                self.best_val_recall = abnormal_recall
                 best_metrics = val_metrics.copy()
                 self.best_model_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
                 self.epochs_no_improve = 0
-                logger.info("  New best abnormal recall: %.4f", abnormal_recall)
+                logger.info("  New best balanced accuracy: %.4f (abnormal recall: %.4f)", bal_acc, abnormal_recall)
             else:
                 self.epochs_no_improve += 1
 

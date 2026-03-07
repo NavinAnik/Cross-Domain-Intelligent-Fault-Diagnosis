@@ -496,6 +496,25 @@ class HTSFFusion(nn.Module):
         
         return logits
 
+    def get_fused_features(
+        self,
+        audio_input: torch.Tensor,
+        vision_input: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return the fused representation before classification (B, hidden_dim)."""
+        audio_feat = self.audio_encoder(audio_input)
+        vision_feat = self.vision_encoder(vision_input)
+
+        if audio_feat.dim() == 2:
+            audio_feat = audio_feat.unsqueeze(1)
+        if vision_feat.dim() == 2:
+            vision_feat = vision_feat.unsqueeze(1)
+
+        audio_pooled, _ = self.temporal_pool(audio_feat)
+        vision_pooled, _ = self.spatial_pool(vision_feat)
+        fused, _ = self.cross_modal(audio_pooled, vision_pooled)
+        return fused
+
     def get_attention_maps(self) -> dict:
         """Return last computed attention maps for visualization."""
         return self._attention_info
