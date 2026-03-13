@@ -14,6 +14,7 @@ Usage:
     python -m experiments.run_improved_experiments --experiment all
 """
 
+import gc
 import os
 import sys
 import json
@@ -969,14 +970,14 @@ class ExperimentRunner:
                 Subset(train_sv, train_idx.tolist()),
                 batch_size=batch_size,
                 sampler=sampler,
-                num_workers=4,
+                num_workers=2,
                 pin_memory=True,
             )
             val_loader = DataLoader(
                 Subset(val_sv, val_idx.tolist()),
                 batch_size=batch_size,
                 shuffle=False,
-                num_workers=4,
+                num_workers=2,
                 pin_memory=True,
             )
 
@@ -1133,7 +1134,7 @@ class ExperimentRunner:
                 tta_ds = _SingleViewDataset(base_ds, tta_t)
                 tta_loader = DataLoader(
                     Subset(tta_ds, val_idx.tolist()),
-                    batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True,
+                    batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True,
                 )
                 fold_probs, fold_labels = [], []
                 with torch.no_grad():
@@ -1161,6 +1162,11 @@ class ExperimentRunner:
                         fold_id, tta_metrics["balanced_accuracy"],
                         tta_metrics["abnormal_recall"], tta_metrics["mcc"])
 
+            del model, criterion, optimizer, scheduler, scaler
+            del train_loader, val_loader
+            torch.cuda.empty_cache()
+            gc.collect()
+
             return {
                 "history": history,
                 "best_metrics": best_metrics,
@@ -1185,6 +1191,10 @@ class ExperimentRunner:
             all_y_true.append(fold_res["y_true"])
             all_y_prob.append(fold_res["y_prob"])
             all_y_pred.append(fold_res["y_pred"])
+
+            torch.cuda.empty_cache()
+            gc.collect()
+            logger.info("Memory cleaned up after fold %d", fold_id)
 
         all_y_true = np.concatenate(all_y_true)
         all_y_prob = np.concatenate(all_y_prob)
