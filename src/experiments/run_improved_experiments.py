@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, GroupKFold, StratifiedGroupKFold
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, average_precision_score, matthews_corrcoef,
@@ -204,7 +204,12 @@ class ExperimentRunner:
     
     def _get_dataloaders(self, dataset_path: str, batch_size: int = 32,
                          use_weighted_sampler: bool = True) -> Tuple[DataLoader, DataLoader, List[int]]:
-        """Get train and validation dataloaders with class balancing."""
+        """Get train and validation dataloaders with group-aware splitting.
+
+        Uses StratifiedGroupKFold when machine groups are available to prevent
+        data leakage (samples from the same machine in both train and val).
+        Falls back to stratified split when only one group exists.
+        """
         from experiments.run_all_models import ImageDataset, _get_dinov2_transforms
         
         get_transforms_fn = _get_dinov2_transforms()
@@ -216,20 +221,34 @@ class ExperimentRunner:
         if len(train_ds.samples) == 0:
             raise FileNotFoundError(f"No images found under {dataset_path}")
         
-        labels = train_ds.labels
-        n_samples = len(labels)
-        train_size = int(0.8 * n_samples)
-        
-        indices = np.random.permutation(n_samples)
-        train_idx, val_idx = indices[:train_size], indices[train_size:]
-        
-        train_labels = [labels[i] for i in train_idx]
+        labels = np.array(train_ds.labels)
+        groups = np.array(train_ds.groups)
+        n_unique_groups = len(set(train_ds.groups))
+
+        if n_unique_groups > 1:
+            sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
+            train_idx, val_idx = next(sgkf.split(
+                np.zeros(len(labels)), labels, groups))
+            logger.info("Group-aware split: %d groups, train=%d, val=%d",
+                        n_unique_groups, len(train_idx), len(val_idx))
+        else:
+            from sklearn.model_selection import train_test_split
+            indices = list(range(len(labels)))
+            train_idx, val_idx = train_test_split(
+                indices, test_size=0.2, stratify=labels, random_state=42)
+            logger.info("Stratified split (single group): train=%d, val=%d",
+                        len(train_idx), len(val_idx))
+
+        train_labels = [int(labels[i]) for i in train_idx]
         
         if use_weighted_sampler:
             class_counts = Counter(train_labels)
             num_classes = 2
-            class_weights = [n_samples / (num_classes * class_counts.get(i, 1)) for i in range(num_classes)]
-            sample_weights = torch.tensor([class_weights[l] for l in train_labels], dtype=torch.float)
+            n_train = len(train_labels)
+            class_weights = [n_train / (num_classes * class_counts.get(i, 1))
+                             for i in range(num_classes)]
+            sample_weights = torch.tensor(
+                [class_weights[l] for l in train_labels], dtype=torch.float)
             sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
             
             train_loader = DataLoader(
@@ -256,7 +275,7 @@ class ExperimentRunner:
             pin_memory=True,
         )
         
-        return train_loader, val_loader, labels
+        return train_loader, val_loader, list(labels)
     
     def run_experiment_1(self, dataset_path: str, epochs: int = 50,
                          batch_size: int = 32) -> Dict[str, Any]:
@@ -590,15 +609,22 @@ class ExperimentRunner:
         full_ds = ImageDataset(dataset_path, transform=transforms_dict["train"])
         val_ds = ImageDataset(dataset_path, transform=transforms_dict["val"])
         
-        labels = full_ds.labels
-        n_samples = len(labels)
-        train_size = int(0.8 * n_samples)
-        
-        indices = np.random.permutation(n_samples)
-        train_idx, val_idx = indices[:train_size], indices[train_size:]
+        labels = np.array(full_ds.labels)
+        groups = np.array(full_ds.groups)
+        n_unique_groups = len(set(full_ds.groups))
+
+        if n_unique_groups > 1:
+            sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
+            train_idx, val_idx = next(sgkf.split(
+                np.zeros(len(labels)), labels, groups))
+        else:
+            from sklearn.model_selection import train_test_split
+            indices = list(range(len(labels)))
+            train_idx, val_idx = train_test_split(
+                indices, test_size=0.2, stratify=labels, random_state=42)
         
         train_dataset = Subset(full_ds, train_idx)
-        train_labels = [labels[i] for i in train_idx]
+        train_labels = [int(labels[i]) for i in train_idx]
         
         val_loader = DataLoader(
             Subset(val_ds, val_idx),
@@ -813,15 +839,15 @@ class ExperimentRunner:
         """
         Experiment 5: Comprehensive Redesign.
 
-        Fixes all issues from Exp1-4 and adds:
-        - Partial DINOv2 backbone fine-tuning (last 4 blocks)
-        - Enhanced classifier head
-        - HTSF fusion with dual-view (distinct augmentations)
-        - Calibrated AFCL loss with warmup
-        - Curriculum learning with balanced_accuracy tracking
-        - Mixup augmentation
-        - Test-Time Augmentation (TTA)
-        - 5-fold stratified CV with bootstrap CI
+        Improvements over Exp1-4:
+        - Partial DINOv2 backbone fine-tuning (last 4 blocks unfrozen)
+        - Enhanced multi-layer classifier head ([512, 256, 128], dropout=0.3)
+        - Calibrated AFCL loss with warmup (contrastive + alignment ramp-up)
+        - Mixup augmentation (alpha=0.2, applied 50% of batches)
+        - Discriminative learning rates (backbone=1e-5, head=1e-3)
+        - Test-Time Augmentation (TTA) with 5 views
+        - 5-fold group-aware stratified CV with bootstrap 95% CI
+        - Early stopping on balanced_accuracy (patience=20)
         - All publication plots saved to results/experiment_5/
         """
         from torchvision import transforms
@@ -855,49 +881,42 @@ class ExperimentRunner:
             "unfreeze_blocks": 4,
             "backbone_lr": 1e-5,
             "head_lr": 1e-3,
-            "classifier": "enhanced",
+            "classifier": "enhanced_mlp",
             "hidden_dims": [512, 256, 128],
             "dropout": 0.3,
-            "fusion": "HTSF_dual_view",
             "loss": "AFCL_warmup",
-            "training": "Curriculum",
+            "early_stopping": "balanced_accuracy_patience_20",
             "epochs": epochs,
             "batch_size": batch_size,
             "mixup_alpha": 0.2,
             "tta_views": 5,
             "cv_folds": 5,
+            "cv_strategy": "StratifiedGroupKFold",
             "seeds": [42, 123, 456, 789, 2024],
         }
 
         self._init_wandb("exp5-comprehensive", config)
 
-        # ---- data ----
+        # ---- data (spectrogram-aware augmentation) ----
         from experiments.run_all_models import ImageDataset
+        from modules.spectrogram_augment import (
+            FrequencyMask, TimeMask, TimeShift, GaussianNoiseTensor,
+        )
 
         IMAGENET_MEAN = (0.485, 0.456, 0.406)
         IMAGENET_STD = (0.229, 0.224, 0.225)
 
         view1_transform = transforms.Compose([
             transforms.Resize((224, 224)),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=10),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
+            transforms.RandomAffine(degrees=0, translate=(0.03, 0.01),
+                                    scale=(0.97, 1.03)),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3),
             transforms.ToTensor(),
             transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ])
-
-        view2_transform = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=15),
-            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1),
-            transforms.RandomApply([
-                transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))
-            ], p=0.3),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-            transforms.RandomErasing(p=0.25, scale=(0.02, 0.15)),
+            FrequencyMask(max_mask_pct=0.15, num_masks=2),
+            TimeMask(max_mask_pct=0.15, num_masks=2),
+            TimeShift(max_shift_pct=0.05),
+            GaussianNoiseTensor(std=0.005),
         ])
 
         val_transform = transforms.Compose([
@@ -909,34 +928,38 @@ class ExperimentRunner:
         tta_transforms = [val_transform] + [
             transforms.Compose([
                 transforms.Resize((224, 224)),
-                transforms.RandomHorizontalFlip(p=1.0),
+                transforms.ColorJitter(brightness=0.15, contrast=0.15),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ]),
             transforms.Compose([
                 transforms.Resize((224, 224)),
-                transforms.RandomRotation(degrees=10),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                FrequencyMask(max_mask_pct=0.10, num_masks=1),
+                TimeMask(max_mask_pct=0.10, num_masks=1),
+            ]),
+            transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.RandomAffine(degrees=0, translate=(0.02, 0.01)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ]),
             transforms.Compose([
                 transforms.Resize((224, 224)),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-            ]),
-            transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+                TimeShift(max_shift_pct=0.05),
             ]),
         ]
 
         base_ds = ImageDataset(dataset_path, transform=None)
         all_labels = np.array(base_ds.labels)
+        all_groups = np.array(base_ds.groups)
         n_samples = len(all_labels)
-        logger.info("Total samples: %d  |  distribution: %s", n_samples, dict(Counter(all_labels)))
+        n_unique_groups = len(set(base_ds.groups))
+        logger.info("Total samples: %d  |  distribution: %s  |  groups: %d",
+                     n_samples, dict(Counter(all_labels)), n_unique_groups)
 
         def _build_model():
             from modules.dinov2_encoder import DINOv2Classifier
@@ -962,7 +985,8 @@ class ExperimentRunner:
             train_labels = [all_labels[i] for i in train_idx]
             class_counts = Counter(train_labels)
             n_cls = 2
-            cw = [n_samples / (n_cls * class_counts.get(i, 1)) for i in range(n_cls)]
+            n_train = len(train_labels)
+            cw = [n_train / (n_cls * class_counts.get(i, 1)) for i in range(n_cls)]
             sw = torch.tensor([cw[l] for l in train_labels], dtype=torch.float)
             sampler = WeightedRandomSampler(sw, len(sw))
 
@@ -1000,8 +1024,15 @@ class ExperimentRunner:
                 param_groups + [{"params": list(criterion.parameters()), "lr": 1e-3}],
                 weight_decay=0.05,
             )
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                optimizer, T_0=max(1, n_epochs // 3), T_mult=2
+            warmup_epochs = 5
+            total_decay = n_epochs - warmup_epochs
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers=[
+                    torch.optim.lr_scheduler.LinearLR(
+                        optimizer, start_factor=0.01, total_iters=warmup_epochs),
+                    torch.optim.lr_scheduler.CosineAnnealingLR(
+                        optimizer, T_max=max(1, total_decay), eta_min=1e-7),
+                ], milestones=[warmup_epochs]
             )
 
             use_amp = self.device.type == "cuda"
@@ -1176,12 +1207,19 @@ class ExperimentRunner:
                 "y_pred": tta_pred,
             }
 
-        # ==== 5-fold stratified CV ====
-        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+        # ==== 5-fold group-aware stratified CV ====
+        if n_unique_groups > 1:
+            cv_splitter = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=SEED)
+            cv_iter = cv_splitter.split(np.zeros(n_samples), all_labels, all_groups)
+            logger.info("Using StratifiedGroupKFold with %d groups", n_unique_groups)
+        else:
+            cv_splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=SEED)
+            cv_iter = cv_splitter.split(np.zeros(n_samples), all_labels)
+            logger.info("Using StratifiedKFold (single group fallback)")
         fold_results = []
         all_y_true, all_y_prob, all_y_pred = [], [], []
 
-        for fold_id, (train_idx, val_idx) in enumerate(skf.split(np.zeros(n_samples), all_labels), 1):
+        for fold_id, (train_idx, val_idx) in enumerate(cv_iter, 1):
             logger.info("=" * 40 + " FOLD %d " + "=" * 40, fold_id)
             fold_seed = config["seeds"][fold_id - 1]
             fold_res = _train_single_fold(

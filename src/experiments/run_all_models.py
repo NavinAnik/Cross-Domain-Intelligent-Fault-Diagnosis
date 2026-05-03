@@ -118,11 +118,18 @@ class ImageDataset(torch.utils.data.Dataset):
     Generic image dataset for classification.
     Expects folder structure: root_dir/class_name/images.png
     OR root_dir/machine_type/machine_id/normal|abnormal/images.png
+
+    MIMII spectrograms often use: root_dir/<-6dB|0dB|6dB>/<fan|pump|...>/normal|abnormal/*.png
+    (SNR folder first, then machine type). Groups become e.g. ``0dB/fan`` for StratifiedGroupKFold.
+
+    Tracks machine groups (machine_type/machine_id) for proper grouped
+    cross-validation that prevents data leakage.
     """
 
     def __init__(self, root_dir: str, transform=None):
         self.samples: List[str] = []
         self.labels: List[int] = []
+        self.groups: List[str] = []
         self.transform = transform
         label_map = {"normal": 0, "abnormal": 1}
 
@@ -131,12 +138,13 @@ class ImageDataset(torch.utils.data.Dataset):
             if not os.path.isdir(item_path):
                 continue
             if item in label_map:
-                self._add_images_from_folder(item_path, label_map[item])
+                self._add_images_from_folder(item_path, label_map[item], group="default")
             else:
                 for label_name in ["normal", "abnormal"]:
                     label_path = os.path.join(item_path, label_name)
                     if os.path.exists(label_path):
-                        self._add_images_from_folder(label_path, label_map[label_name])
+                        self._add_images_from_folder(
+                            label_path, label_map[label_name], group=item)
                     else:
                         for machine_id in os.listdir(item_path):
                             mid_path = os.path.join(item_path, machine_id)
@@ -144,17 +152,23 @@ class ImageDataset(torch.utils.data.Dataset):
                                 for ln in ["normal", "abnormal"]:
                                     lp = os.path.join(mid_path, ln)
                                     if os.path.exists(lp):
-                                        self._add_images_from_folder(lp, label_map[ln])
+                                        self._add_images_from_folder(
+                                            lp, label_map[ln],
+                                            group=f"{item}/{machine_id}")
 
         if self.samples:
-            logger.info("Loaded %d images, distribution: %s", len(self.samples), dict(Counter(self.labels)))
+            logger.info("Loaded %d images, distribution: %s, groups: %d",
+                        len(self.samples), dict(Counter(self.labels)),
+                        len(set(self.groups)))
 
-    def _add_images_from_folder(self, folder_path: str, label: int) -> None:
+    def _add_images_from_folder(self, folder_path: str, label: int,
+                                group: str = "default") -> None:
         valid = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}
         for f in os.listdir(folder_path):
             if any(f.lower().endswith(ext) for ext in valid):
                 self.samples.append(os.path.join(folder_path, f))
                 self.labels.append(label)
+                self.groups.append(group)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -178,33 +192,44 @@ def _get_image_dataloaders(
     val_idx: Optional[List[int]] = None,
     **transform_kwargs,
 ) -> Tuple[DataLoader, DataLoader, List[int]]:
-    """Build train/val image dataloaders using the given transform getter.
-    Returns: train_loader, val_loader, train_labels (for class weighting)
-    If train_idx/val_idx provided (e.g. for CV), use those instead of random split.
+    """Build train/val image dataloaders with group-aware splitting.
+
+    Uses StratifiedGroupKFold when machine groups exist to prevent data leakage.
+    Returns: train_loader, val_loader, train_labels (for class weighting).
+    If train_idx/val_idx provided (e.g. for CV), use those instead of automatic split.
     """
     transforms_dict = get_transforms(image_size=image_size, **transform_kwargs)
     train_ds = ImageDataset(dataset_path, transform=transforms_dict["train"])
     val_ds = ImageDataset(dataset_path, transform=transforms_dict["val"])
     if len(train_ds.samples) == 0:
         raise FileNotFoundError(f"No images found under {dataset_path}")
-    indices = list(range(len(train_ds)))
     if train_idx is not None and val_idx is not None:
         pass
     else:
-        train_idx, val_idx = train_test_split(
-            indices, test_size=val_split, stratify=train_ds.labels, random_state=42
-        )
+        import numpy as _np
+        labels_arr = _np.array(train_ds.labels)
+        groups_arr = _np.array(train_ds.groups)
+        n_groups = len(set(train_ds.groups))
+        if n_groups > 1:
+            from sklearn.model_selection import StratifiedGroupKFold
+            sgkf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
+            train_idx, val_idx = next(sgkf.split(
+                _np.zeros(len(labels_arr)), labels_arr, groups_arr))
+            logger.info("Group-aware split: %d groups", n_groups)
+        else:
+            indices = list(range(len(train_ds)))
+            train_idx, val_idx = train_test_split(
+                indices, test_size=val_split, stratify=train_ds.labels, random_state=42)
     
-    # Get train labels for class weighting
     train_labels = [train_ds.labels[i] for i in train_idx]
     
     sampler = None
     shuffle = True
     if use_weighted_sampler and len(train_labels) > 0:
         class_counts = Counter(train_labels)
-        total = sum(class_counts.values())
+        n_train = len(train_labels)
         num_classes = len(class_counts)
-        weights = [total / (num_classes * class_counts.get(i, 1)) for i in range(num_classes)]
+        weights = [n_train / (num_classes * class_counts.get(i, 1)) for i in range(num_classes)]
         sample_weights = torch.tensor([weights[l] for l in train_labels], dtype=torch.float)
         sampler = WeightedRandomSampler(sample_weights, len(sample_weights))
         shuffle = False
@@ -391,6 +416,11 @@ def _build_ast(device: torch.device, config: Dict[str, Any]) -> nn.Module:
 def _get_dinov2_transforms():
     from modules.dinov2_encoder import get_dinov2_transforms
     return get_dinov2_transforms
+
+
+def _get_spectrogram_transforms():
+    from modules.spectrogram_augment import get_spectrogram_transforms
+    return get_spectrogram_transforms
 
 
 def _get_mae_transforms():

@@ -35,7 +35,9 @@ __all__ = [
     "plot_tsne_umap",
     "plot_attention_map",
     "compute_grad_cam_vit",
+    "compute_grad_cam_cnn",
     "plot_grad_cam",
+    "plot_grad_cam_cnn",
     "plot_radar_chart",
     "plot_radar_from_metric_dicts",
     "plot_cv_metric_boxplots",
@@ -449,6 +451,57 @@ def compute_grad_cam_vit(
     return cam.astype(np.float32)
 
 
+def compute_grad_cam_cnn(
+    model: nn.Module,
+    x: torch.Tensor,
+    target_class: Optional[int] = None,
+    backbone_attr: str = "backbone",
+) -> np.ndarray:
+    """
+    Grad-CAM from the last 4D feature map of a CNN backbone (e.g. timm ResNet/EfficientNet).
+
+    Expects ``model.<backbone_attr>(x)`` to yield (B, C, H, W) during ``model(x)``.
+    Works with CNNBaseline, CNNSpatialAttention, and CNNTransformerHybrid (CNN stem only).
+    """
+    if x.dim() == 3:
+        x = x.unsqueeze(0)
+    backbone = getattr(model, backbone_attr, None)
+    if backbone is None:
+        raise ValueError(f"Model has no '{backbone_attr}' for CNN Grad-CAM.")
+
+    feats_holder: Dict[str, torch.Tensor] = {}
+
+    def hook(_module, _inp, out):
+        t = out[0] if isinstance(out, tuple) else out
+        if isinstance(t, torch.Tensor) and t.dim() == 4:
+            t.retain_grad()
+            feats_holder["f"] = t
+
+    handle = backbone.register_forward_hook(hook)
+    model.eval()
+    logits = model(x)
+    handle.remove()
+
+    f = feats_holder.get("f")
+    if f is None:
+        raise ValueError("Backbone did not produce a 4D feature map for Grad-CAM.")
+
+    if target_class is None:
+        target_class = int(logits.argmax(dim=1).item())
+
+    model.zero_grad()
+    logits[0, target_class].backward()
+    grads = f.grad
+    if grads is None:
+        raise RuntimeError("No gradients on feature map; ensure model is differentiable.")
+
+    weights = grads[0].mean(dim=(1, 2), keepdim=True)
+    cam = (weights * f[0]).sum(dim=0)
+    cam = F.relu(cam).detach().cpu().numpy()
+    cam = (cam - cam.min()) / (cam.max() - cam.min() + 1e-8)
+    return cam.astype(np.float32)
+
+
 def plot_grad_cam(
     model: nn.Module,
     x: torch.Tensor,
@@ -489,6 +542,44 @@ def plot_grad_cam(
     img_for_overlay = input_image
     if img_for_overlay is None and x.dim() == 4:
         # Denormalize for display (ImageNet mean/std)
+        img = x[0].detach().cpu().float()
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+        img = img * std + mean
+        img = np.clip(img.numpy(), 0, 1)
+        img_for_overlay = np.transpose(img, (1, 2, 0))
+    plot_attention_map(
+        cam,
+        output_path=output_path,
+        input_image=img_for_overlay,
+        patch_size=None,
+        title=title,
+        cmap=cmap,
+        overlay_alpha=overlay_alpha,
+        figsize=figsize,
+    )
+    return cam
+
+
+def plot_grad_cam_cnn(
+    model: nn.Module,
+    x: torch.Tensor,
+    output_path: str,
+    target_class: Optional[int] = None,
+    input_image: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    backbone_attr: str = "backbone",
+    title: str = "Grad-CAM (CNN)",
+    figsize: Tuple[int, int] = (8, 6),
+    overlay_alpha: float = 0.5,
+    cmap: str = "jet",
+) -> np.ndarray:
+    """Grad-CAM on CNN backbone feature maps; save overlaid figure like ``plot_grad_cam``."""
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    cam = compute_grad_cam_cnn(
+        model, x, target_class=target_class, backbone_attr=backbone_attr
+    )
+    img_for_overlay = input_image
+    if img_for_overlay is None and x.dim() == 4:
         img = x[0].detach().cpu().float()
         mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)

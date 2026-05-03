@@ -13,7 +13,6 @@ from sklearn.metrics import (
     average_precision_score,
 )
 from sklearn.metrics import precision_recall_curve, auc
-from sklearn.preprocessing import label_binarize
 
 
 def _get_pos_probs(y_pred_probs, n_classes):
@@ -123,12 +122,21 @@ def compute_classification_metrics(y_true, y_pred, y_pred_probs=None, n_classes=
 
     if y_pred_probs is not None:
         pos_probs, probs_2d = _get_pos_probs(y_pred_probs, n_classes)
+        # Keep keys stable for downstream reporting even in degenerate folds.
+        metrics["auc_roc"] = 0.0
+        metrics["auc_pr"] = 0.0
         if pos_probs is not None:
             # Binary ROC/PR AUC
-            fpr, tpr, _ = roc_curve(y_true, pos_probs)
-            metrics["auc_roc"] = float(auc(fpr, tpr))
-            prec_curve, rec_curve, _ = precision_recall_curve(y_true, pos_probs)
-            metrics["auc_pr"] = float(auc(rec_curve, prec_curve))
+            try:
+                fpr, tpr, _ = roc_curve(y_true, pos_probs)
+                metrics["auc_roc"] = float(auc(fpr, tpr))
+            except Exception:
+                metrics["auc_roc"] = 0.0
+            try:
+                prec_curve, rec_curve, _ = precision_recall_curve(y_true, pos_probs)
+                metrics["auc_pr"] = float(auc(rec_curve, prec_curve))
+            except Exception:
+                metrics["auc_pr"] = 0.0
             # Brier score (binary)
             metrics["brier_score"] = float(brier_score_loss(y_true, pos_probs))
             # ECE
@@ -140,8 +148,13 @@ def compute_classification_metrics(y_true, y_pred, y_pred_probs=None, n_classes=
 
         # Per-class ROC AUC and PR AUC
         if probs_2d is not None and probs_2d.shape[1] >= 2:
-            y_true_bin = label_binarize(y_true, classes=np.arange(probs_2d.shape[1]))
-            for c in range(min(probs_2d.shape[1], n_classes)):
+            # One-hot (n, n_probs); avoids sklearn label_binarize returning (n,) or (n,1) for binary
+            n_pc = probs_2d.shape[1]
+            y_true_bin = np.zeros((len(y_true), n_pc), dtype=np.float64)
+            yt = np.asarray(y_true).astype(int).ravel()
+            valid = (yt >= 0) & (yt < n_pc)
+            y_true_bin[np.arange(len(yt))[valid], yt[valid]] = 1.0
+            for c in range(min(n_pc, n_classes)):
                 if np.any(y_true_bin[:, c] == 1) and np.any(y_true_bin[:, c] == 0):
                     try:
                         metrics[f"auc_roc_class_{c}"] = float(
