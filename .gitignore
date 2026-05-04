@@ -76,3 +76,11 @@ src/model/
 results/
 *.pth
 .idea/
+
+# --- Journal / submission outputs (exceptions to *.png, *.csv, results/ above) ---
+!docs/journal_submission_figures/
+!docs/journal_submission_figures/**/*
+!docs/journal_submission_tables/
+!docs/journal_submission_tables/**/*
+!docs/journal_aggregation/
+!docs/journal_aggregation/**/*

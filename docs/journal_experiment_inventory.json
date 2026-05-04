@@ -1,0 +1,189 @@
+{
+  "title": "Contrastive self-supervised learning / industrial anomaly — experiment inventory",
+  "version": 1,
+  "novel_method_modules": [
+    {
+      "name": "Asymmetric focal contrastive loss (AFCL)",
+      "path": "src/modules/afcl_loss.py"
+    },
+    {
+      "name": "Curriculum trainer",
+      "path": "src/modules/curriculum_learning.py"
+    },
+    {
+      "name": "Spectrogram CNN / spatial attention / CNN–Transformer hybrid",
+      "path": "src/modules/spectrogram_cnn_models.py"
+    },
+    {
+      "name": "Spectrogram fault data + SpecAugment-style transforms",
+      "path": "src/modules/spectrogram_fault_data.py"
+    },
+    {
+      "name": "Fusion + optional contrastive pairing (ConFu)",
+      "path": "src/experiments/run_fusion_experiments.py"
+    },
+    {
+      "name": "Publication figures / tables loaders",
+      "path": "src/experiments/generate_publication_figures.py"
+    },
+    {
+      "name": "Publication tables",
+      "path": "src/experiments/generate_tables.py"
+    }
+  ],
+  "experiment_entrypoints": [
+    {
+      "id": "vision_run_all_models",
+      "line_of_work": "vision_supervised_zoo",
+      "script": "src/experiments/run_all_models.py",
+      "cli": "python -m experiments.run_all_models",
+      "typical_outputs": ["results/**", "checkpoints per model"],
+      "primary_metrics": ["best_val_acc", "evaluation_metrics"],
+      "notes": "Multi-architecture image classification on ImageDataset layout."
+    },
+    {
+      "id": "vision_single_model_batch",
+      "line_of_work": "vision_supervised_zoo",
+      "script": "src/experiments/run_single_model_experiments.py",
+      "cli": "python -m experiments.run_single_model_experiments",
+      "typical_outputs": ["<results_dir>/single_model_experiments_summary.json"],
+      "primary_metrics": ["best_val_acc", "evaluation_metrics.accuracy", "auc_roc"],
+      "notes": "Batch run; summary JSON is the main aggregation artifact."
+    },
+    {
+      "id": "improved_exp_1_6",
+      "line_of_work": "improved_mimii_dinov2",
+      "script": "src/experiments/run_improved_experiments.py",
+      "cli": "python -m experiments.run_improved_experiments",
+      "typical_outputs": ["src/results/improved_experiments/exp*_results.json"],
+      "primary_metrics": ["balanced_accuracy", "auc_roc", "abnormal_recall"],
+      "notes": "Experiments 1–6: focal, thresholds, TTA, curriculum, etc. (see class ExperimentRunner)."
+    },
+    {
+      "id": "q1_pipeline",
+      "line_of_work": "q1_rigorous_mimii",
+      "script": "src/experiments/run_q1_experiments.py",
+      "cli": "python -m experiments.run_q1_experiments",
+      "typical_outputs": ["results/q1_*/**", "JSON summaries per experiment flag"],
+      "primary_metrics": ["balanced_accuracy", "auc_roc", "f1"],
+      "notes": "Group-aware CV, AFCL/HTSF wiring, statistical tests."
+    },
+    {
+      "id": "fusion_multimodal",
+      "line_of_work": "audio_vision_fusion",
+      "script": "src/experiments/run_fusion_experiments.py",
+      "cli": "python -m experiments.run_fusion_experiments",
+      "typical_outputs": ["<output>/fusion_summary.json"],
+      "primary_metrics": ["accuracy", "f1", "balanced_accuracy"],
+      "notes": "Early/late/confu-style fusion; optional NT-Xent on paired features."
+    },
+    {
+      "id": "ablations_contrastive",
+      "line_of_work": "ablation_studies",
+      "script": "src/experiments/run_ablations.py",
+      "cli": "python -m experiments.run_ablations",
+      "typical_outputs": ["results/ablation_*.json"],
+      "primary_metrics": ["varies by loss_name"],
+      "notes": "Contrastive and supervised ablations."
+    },
+    {
+      "id": "ablation_comparison_runner",
+      "line_of_work": "ablation_studies",
+      "script": "src/experiments/run_ablation_comparison.py",
+      "cli": "python -m experiments.run_ablation_comparison",
+      "typical_outputs": ["<output_dir>/*.json", "markdown tables"],
+      "primary_metrics": ["balanced_accuracy", "abnormal_recall", "mcc"],
+      "notes": "AblationRunner writes JSON + markdown tables."
+    },
+    {
+      "id": "rigorous_cv",
+      "line_of_work": "cross_validation",
+      "script": "src/experiments/run_rigorous_cv.py",
+      "cli": "python -m experiments.run_rigorous_cv",
+      "typical_outputs": ["rigorous_cv_results.json", "table_*.md"],
+      "primary_metrics": ["mean per-fold accuracy", "significance vs baseline"],
+      "notes": "RigorousCVRunner.save_results default filename."
+    },
+    {
+      "id": "cv_statistical_analysis",
+      "line_of_work": "cross_validation",
+      "script": "src/experiments/run_cv_and_statistical_analysis.py",
+      "cli": "python -m experiments.run_cv_and_statistical_analysis",
+      "typical_outputs": ["cv_results.json"],
+      "primary_metrics": ["per-model fold metrics"],
+      "notes": "Consumes or produces cv_results.json for generate_publication_figures."
+    },
+    {
+      "id": "spectrogram_fault_train",
+      "line_of_work": "spectrogram_image_supervised",
+      "script": "src/experiments/train_spectrogram_fault.py",
+      "cli": "python -m experiments.train_spectrogram_fault",
+      "typical_outputs": ["results/spectrogram_fault/<run_id>/metrics.json", "config.json", "*.png"],
+      "primary_metrics": ["val_balanced_accuracy", "auc_roc", "macro_f1"],
+      "notes": "Supervised timm CNN / cnn_se / cnn_transformer; group-aware split optional."
+    },
+    {
+      "id": "spectrogram_ablation_grid",
+      "line_of_work": "spectrogram_image_supervised",
+      "script": "src/experiments/run_spectrogram_ablation.py",
+      "cli": "python -m experiments.run_spectrogram_ablation",
+      "typical_outputs": ["ablation_results_<timestamp>.csv", ".json"],
+      "primary_metrics": ["best_val_bal_acc per row", "metrics.json per sub-run"],
+      "notes": "Grid over model x augment x loss."
+    },
+    {
+      "id": "contrastive_mimii_train",
+      "line_of_work": "contrastive_ssl_audio",
+      "script": "src/train.py",
+      "cli": "python train.py",
+      "typical_outputs": ["logs/", "wandb"],
+      "primary_metrics": ["nt_xent loss", "val_auc", "val_max_f1"],
+      "notes": "Transformer encoder + NT-Xent on MIMII mel features."
+    },
+    {
+      "id": "main_pretrain",
+      "line_of_work": "contrastive_ssl_image",
+      "script": "src/main_pretrain.py",
+      "cli": "python main_pretrain.py",
+      "typical_outputs": ["logs/"],
+      "primary_metrics": ["train loss", "linear probe acc"],
+      "notes": "Image contrastive pretrain stub path."
+    },
+    {
+      "id": "dinov2_main",
+      "line_of_work": "dinov2_line",
+      "script": "src/main_dinov2.py",
+      "cli": "python main_dinov2.py",
+      "typical_outputs": ["results/**"],
+      "primary_metrics": ["task-dependent"],
+      "notes": "DINOv2-focused training entry."
+    },
+    {
+      "id": "image_cv",
+      "line_of_work": "vision_cv",
+      "script": "src/experiments/run_image_cv.py",
+      "cli": "python -m experiments.run_image_cv",
+      "typical_outputs": ["cv folds", "JSON"],
+      "primary_metrics": ["accuracy", "f1"],
+      "notes": "Image-level cross-validation."
+    },
+    {
+      "id": "hyperparameter_search",
+      "line_of_work": "vision_supervised_zoo",
+      "script": "src/experiments/hyperparameter_search.py",
+      "cli": "python -m experiments.hyperparameter_search",
+      "typical_outputs": ["experiments/hp_search/**"],
+      "primary_metrics": ["validation score"],
+      "notes": "Grid search over models and hyperparameters."
+    }
+  ],
+  "aggregation_outputs": {
+    "index_json": "docs/journal_aggregation/journal_experiment_index.json",
+    "index_csv": "docs/journal_aggregation/journal_experiment_index.csv",
+    "best_json": "docs/journal_aggregation/journal_best_by_bucket.json",
+    "missing_data_readme": "docs/journal_aggregation/MISSING_DATA.md",
+    "comparative_figure_pdf": "docs/journal_submission_figures/comparison_by_bucket.pdf",
+    "comparative_figure_png": "docs/journal_submission_figures/comparison_by_bucket.png",
+    "manuscript_docx": "docs/Journal_Full_Comparative_Study.docx"
+  }
+}

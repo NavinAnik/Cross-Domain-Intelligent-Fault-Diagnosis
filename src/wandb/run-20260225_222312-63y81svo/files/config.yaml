@@ -1,0 +1,103 @@
+_wandb:
+    value:
+        cli_version: 0.24.2
+        e:
+            uc4rqljanck3imsd7w8udrxj2qjiqipi:
+                args:
+                    - --model
+                    - metaclip2
+                cpu_count: 8
+                cpu_count_logical: 16
+                cudaVersion: "13.1"
+                disk:
+                    /:
+                        total: "262143995904"
+                        used: "229685243904"
+                email: smnavinnayeranik@gmail.com
+                executable: F:\Codes\contrastive_self-supervised_learning\venv\Scripts\python.exe
+                git:
+                    commit: 56f729e9372e9a37c19b339250bcf8112a460a80
+                    remote: https://github.com/NavinAnik/contrastive_self-supervised_learning.git
+                gpu: NVIDIA GeForce RTX 2060 SUPER
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Turing
+                      cudaCores: 2176
+                      memoryTotal: "8589934592"
+                      name: NVIDIA GeForce RTX 2060 SUPER
+                      uuid: GPU-6fda6b33-77ce-28ba-bef5-2634558ca970
+                host: She
+                memory:
+                    total: "51461705728"
+                os: Windows-11-10.0.26200-SP0
+                program: -m experiments.run_all_models
+                python: CPython 3.14.3
+                root: F:\Codes\contrastive_self-supervised_learning\src
+                startedAt: "2026-02-25T16:23:12.624944Z"
+                writerId: uc4rqljanck3imsd7w8udrxj2qjiqipi
+        m: []
+        python_version: 3.14.3
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+            "3":
+                - 13
+                - 16
+            "4": 3.14.3
+            "5": 0.24.2
+            "6": 5.1.0
+            "8":
+                - 2
+                - 3
+            "10":
+                - 20
+            "12": 0.24.2
+            "13": windows-amd64
+accumulation_steps:
+    value: 2
+batch_size:
+    value: 8
+dataset_path:
+    value: H:/dataset/MIMII_Dataset/spectrograms
+dropout:
+    value: 0.1
+epochs:
+    value: 100
+freeze_backbone:
+    value: true
+hidden_dim:
+    value: 256
+image_size:
+    value: 518
+learning_rate:
+    value: 0.0002
+model:
+    value: metaclip2
+num_classes:
+    value: 2
+output_dir:
+    value: model
+results_dir:
+    value: results
+use_amp:
+    value: true
+use_fp16:
+    value: true
+use_gradient_checkpointing:
+    value: false
+val_split:
+    value: 0.2

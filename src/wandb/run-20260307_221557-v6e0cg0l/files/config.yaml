@@ -1,0 +1,107 @@
+_wandb:
+    value:
+        cli_version: 0.24.2
+        e:
+            ph37swqy8ahas7is28bisae7x6tdhftp:
+                args:
+                    - --experiment
+                    - "5"
+                    - --epochs
+                    - "50"
+                    - --batch_size
+                    - "16"
+                cpu_count: 8
+                cpu_count_logical: 16
+                cudaVersion: "13.1"
+                disk:
+                    /:
+                        total: "262143995904"
+                        used: "238534320128"
+                email: smnavinnayeranik@gmail.com
+                executable: F:\Codes\contrastive_self-supervised_learning\venv\Scripts\python.exe
+                git:
+                    commit: 7f7f571640b36673a17f3302a070c5aa26f21b9f
+                    remote: https://github.com/NavinAnik/contrastive_self-supervised_learning.git
+                gpu: NVIDIA GeForce RTX 2060 SUPER
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Turing
+                      cudaCores: 2176
+                      memoryTotal: "8589934592"
+                      name: NVIDIA GeForce RTX 2060 SUPER
+                      uuid: GPU-6fda6b33-77ce-28ba-bef5-2634558ca970
+                host: She
+                memory:
+                    total: "51461705728"
+                os: Windows-11-10.0.26200-SP0
+                program: -m experiments.run_improved_experiments
+                python: CPython 3.14.3
+                root: F:\Codes\contrastive_self-supervised_learning\src
+                startedAt: "2026-03-07T16:15:57.745523Z"
+                writerId: ph37swqy8ahas7is28bisae7x6tdhftp
+        m: []
+        python_version: 3.14.3
+        t:
+            "1":
+                - 1
+                - 5
+                - 41
+                - 53
+            "2":
+                - 1
+                - 5
+                - 41
+                - 53
+            "3":
+                - 13
+                - 15
+                - 16
+            "4": 3.14.3
+            "5": 0.24.2
+            "8":
+                - 2
+                - 3
+            "12": 0.24.2
+            "13": windows-amd64
+backbone:
+    value: dinov2_vitb14
+backbone_lr:
+    value: 1e-05
+batch_size:
+    value: 8
+classifier:
+    value: enhanced
+cv_folds:
+    value: 5
+dropout:
+    value: 0.3
+epochs:
+    value: 100
+experiment:
+    value: exp5_comprehensive
+fusion:
+    value: HTSF_dual_view
+head_lr:
+    value: 0.001
+hidden_dims:
+    value:
+        - 512
+        - 256
+        - 128
+loss:
+    value: AFCL_warmup
+mixup_alpha:
+    value: 0.2
+seeds:
+    value:
+        - 42
+        - 123
+        - 456
+        - 789
+        - 2024
+training:
+    value: Curriculum
+tta_views:
+    value: 5
+unfreeze_blocks:
+    value: 4

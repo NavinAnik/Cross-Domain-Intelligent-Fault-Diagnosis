@@ -279,3 +279,246 @@ def bootstrap_accuracy(y_true, y_pred, n_bootstrap=1000, confidence=0.95, random
         "ci_99_lower": ci_99_lo,
         "ci_99_upper": ci_99_hi,
     }
+
+
+def cohens_d(scores_a, scores_b):
+    """
+    Compute Cohen's d effect size for comparing two groups.
+    
+    Interpretation:
+        |d| < 0.2: negligible
+        0.2 <= |d| < 0.5: small
+        0.5 <= |d| < 0.8: medium
+        |d| >= 0.8: large
+
+    Args:
+        scores_a: Metric values for method A.
+        scores_b: Metric values for method B.
+
+    Returns:
+        dict: {"d": float, "interpretation": str}
+    """
+    scores_a = np.asarray(scores_a).ravel()
+    scores_b = np.asarray(scores_b).ravel()
+    
+    n1, n2 = len(scores_a), len(scores_b)
+    mean1, mean2 = np.mean(scores_a), np.mean(scores_b)
+    var1, var2 = np.var(scores_a, ddof=1), np.var(scores_b, ddof=1)
+    
+    pooled_std = np.sqrt(((n1 - 1) * var1 + (n2 - 1) * var2) / (n1 + n2 - 2))
+    
+    if pooled_std < 1e-10:
+        d = 0.0
+    else:
+        d = (mean1 - mean2) / pooled_std
+    
+    abs_d = abs(d)
+    if abs_d < 0.2:
+        interpretation = "negligible"
+    elif abs_d < 0.5:
+        interpretation = "small"
+    elif abs_d < 0.8:
+        interpretation = "medium"
+    else:
+        interpretation = "large"
+    
+    return {"d": float(d), "interpretation": interpretation}
+
+
+def bonferroni_correction(p_values, alpha=0.05):
+    """
+    Apply Bonferroni correction for multiple comparisons.
+
+    Args:
+        p_values: List or array of p-values from multiple tests.
+        alpha: Original significance level (default 0.05).
+
+    Returns:
+        dict: {
+            "corrected_alpha": float,
+            "significant": list of bool (one per p-value),
+            "adjusted_p_values": list of adjusted p-values (min(p*n, 1))
+        }
+    """
+    p_values = np.asarray(p_values).ravel()
+    n_tests = len(p_values)
+    corrected_alpha = alpha / n_tests if n_tests > 0 else alpha
+    adjusted = np.minimum(p_values * n_tests, 1.0)
+    significant = p_values < corrected_alpha
+    
+    return {
+        "corrected_alpha": float(corrected_alpha),
+        "significant": significant.tolist(),
+        "adjusted_p_values": adjusted.tolist(),
+        "n_tests": n_tests,
+    }
+
+
+def holm_bonferroni_correction(p_values, alpha=0.05):
+    """
+    Apply Holm-Bonferroni (step-down) correction for multiple comparisons.
+    More powerful than standard Bonferroni while controlling family-wise error rate.
+
+    Args:
+        p_values: List or array of p-values from multiple tests.
+        alpha: Original significance level (default 0.05).
+
+    Returns:
+        dict: {
+            "significant": list of bool,
+            "adjusted_p_values": list of adjusted p-values,
+            "rejection_indices": indices of rejected null hypotheses
+        }
+    """
+    p_values = np.asarray(p_values).ravel()
+    n = len(p_values)
+    if n == 0:
+        return {"significant": [], "adjusted_p_values": [], "rejection_indices": []}
+    
+    sorted_idx = np.argsort(p_values)
+    sorted_p = p_values[sorted_idx]
+    
+    adjusted = np.zeros(n)
+    significant = np.zeros(n, dtype=bool)
+    
+    running_max = 0.0
+    for i in range(n):
+        adj_p = sorted_p[i] * (n - i)
+        running_max = max(running_max, adj_p)
+        adjusted[sorted_idx[i]] = min(running_max, 1.0)
+    
+    for i in range(n):
+        threshold = alpha / (n - i)
+        if sorted_p[i] <= threshold:
+            significant[sorted_idx[i]] = True
+        else:
+            break
+    
+    rejection_indices = np.where(significant)[0].tolist()
+    
+    return {
+        "significant": significant.tolist(),
+        "adjusted_p_values": adjusted.tolist(),
+        "rejection_indices": rejection_indices,
+    }
+
+
+def significance_matrix_with_correction(
+    all_models_scores,
+    metric_name="accuracy",
+    tests=("ttest", "wilcoxon"),
+    correction="bonferroni",
+    alpha=0.05,
+):
+    """
+    Compute pairwise statistical significance with multiple comparison correction.
+    
+    Extends significance_matrix() with:
+    - Bonferroni or Holm-Bonferroni correction
+    - Cohen's d effect sizes
+    - Clear significance indicators
+
+    Args:
+        all_models_scores: Dict mapping model name -> list of metric values.
+        metric_name: Label for the metric.
+        tests: Which tests to run: "ttest", "wilcoxon", or both.
+        correction: "bonferroni", "holm", or None.
+        alpha: Significance level before correction.
+
+    Returns:
+        dict with pvalue matrices, effect sizes, and corrected significance.
+    """
+    model_names = list(all_models_scores.keys())
+    n = len(model_names)
+    
+    if n < 2:
+        return {
+            "model_names": model_names,
+            "metric_name": metric_name,
+            "n_comparisons": 0,
+        }
+    
+    score_arrays = [np.asarray(all_models_scores[name]).ravel() for name in model_names]
+    fold_len = len(score_arrays[0])
+    
+    for i, arr in enumerate(score_arrays):
+        if len(arr) != fold_len:
+            raise ValueError(
+                f"All models must have the same number of fold scores; "
+                f"{model_names[i]} has {len(arr)}, expected {fold_len}"
+            )
+    
+    mean_scores = np.array([float(np.mean(a)) for a in score_arrays])
+    
+    pvalue_ttest = np.full((n, n), np.nan)
+    pvalue_wilcoxon = np.full((n, n), np.nan)
+    effect_size = np.full((n, n), np.nan)
+    effect_interp = [['' for _ in range(n)] for _ in range(n)]
+    
+    p_values_list = []
+    pair_indices = []
+    
+    for i in range(n):
+        pvalue_ttest[i, i] = 1.0
+        pvalue_wilcoxon[i, i] = 1.0
+        effect_size[i, i] = 0.0
+        effect_interp[i][i] = 'same'
+        
+        for j in range(i + 1, n):
+            if "ttest" in tests:
+                res = paired_ttest(score_arrays[i], score_arrays[j])
+                pvalue_ttest[i, j] = res["pvalue"]
+                pvalue_ttest[j, i] = res["pvalue"]
+                p_values_list.append(res["pvalue"])
+                pair_indices.append((i, j))
+            
+            if "wilcoxon" in tests:
+                try:
+                    res = wilcoxon_signed_rank(score_arrays[i], score_arrays[j])
+                    pvalue_wilcoxon[i, j] = res["pvalue"]
+                    pvalue_wilcoxon[j, i] = res["pvalue"]
+                except ValueError:
+                    pvalue_wilcoxon[i, j] = 1.0
+                    pvalue_wilcoxon[j, i] = 1.0
+            
+            cd = cohens_d(score_arrays[i], score_arrays[j])
+            effect_size[i, j] = cd["d"]
+            effect_size[j, i] = -cd["d"]
+            effect_interp[i][j] = cd["interpretation"]
+            effect_interp[j][i] = cd["interpretation"]
+    
+    if correction == "bonferroni" and p_values_list:
+        corr_result = bonferroni_correction(p_values_list, alpha=alpha)
+    elif correction == "holm" and p_values_list:
+        corr_result = holm_bonferroni_correction(p_values_list, alpha=alpha)
+    else:
+        corr_result = {
+            "significant": [p < alpha for p in p_values_list],
+            "adjusted_p_values": p_values_list,
+            "corrected_alpha": alpha,
+        }
+    
+    significant_pairs = []
+    adjusted_pvalue_ttest = np.full((n, n), np.nan)
+    for idx, ((i, j), adj_p, is_sig) in enumerate(zip(
+        pair_indices, corr_result["adjusted_p_values"], corr_result["significant"]
+    )):
+        adjusted_pvalue_ttest[i, j] = adj_p
+        adjusted_pvalue_ttest[j, i] = adj_p
+        if is_sig:
+            significant_pairs.append((model_names[i], model_names[j], adj_p))
+    
+    return {
+        "model_names": model_names,
+        "metric_name": metric_name,
+        "mean_scores": mean_scores,
+        "pvalue_ttest": pvalue_ttest,
+        "pvalue_wilcoxon": pvalue_wilcoxon,
+        "adjusted_pvalue_ttest": adjusted_pvalue_ttest,
+        "effect_size": effect_size,
+        "effect_interpretation": effect_interp,
+        "n_comparisons": len(pair_indices),
+        "corrected_alpha": corr_result.get("corrected_alpha", alpha),
+        "significant_pairs": significant_pairs,
+        "correction_method": correction,
+    }

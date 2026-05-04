@@ -1,0 +1,78 @@
+_wandb:
+    value:
+        cli_version: 0.24.2
+        e:
+            7lscdmaqzheuf022o6cbtv2fax7pxlkr:
+                args:
+                    - --experiment
+                    - all
+                cpu_count: 8
+                cpu_count_logical: 16
+                cudaVersion: "13.1"
+                disk:
+                    /:
+                        total: "262143995904"
+                        used: "237988249600"
+                email: smnavinnayeranik@gmail.com
+                executable: F:\Codes\contrastive_self-supervised_learning\venv\Scripts\python.exe
+                git:
+                    commit: 56f729e9372e9a37c19b339250bcf8112a460a80
+                    remote: https://github.com/NavinAnik/contrastive_self-supervised_learning.git
+                gpu: NVIDIA GeForce RTX 2060 SUPER
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Turing
+                      cudaCores: 2176
+                      memoryTotal: "8589934592"
+                      name: NVIDIA GeForce RTX 2060 SUPER
+                      uuid: GPU-6fda6b33-77ce-28ba-bef5-2634558ca970
+                host: She
+                memory:
+                    total: "51461705728"
+                os: Windows-11-10.0.26200-SP0
+                program: -m experiments.run_improved_experiments
+                python: CPython 3.14.3
+                root: F:\Codes\contrastive_self-supervised_learning\src
+                startedAt: "2026-03-06T16:07:26.637486Z"
+                writerId: 7lscdmaqzheuf022o6cbtv2fax7pxlkr
+        m: []
+        python_version: 3.14.3
+        t:
+            "1":
+                - 1
+                - 5
+                - 41
+                - 53
+            "2":
+                - 1
+                - 5
+                - 41
+                - 53
+            "3":
+                - 2
+                - 13
+                - 15
+                - 16
+            "4": 3.14.3
+            "5": 0.24.2
+            "8":
+                - 2
+                - 3
+            "12": 0.24.2
+            "13": windows-amd64
+batch_size:
+    value: 32
+epochs:
+    value: 100
+experiment:
+    value: exp3_curriculum
+phase_ratios:
+    value:
+        - 0.3
+        - 0.4
+        - 0.3
+phases:
+    value:
+        - balanced
+        - gradual
+        - full
