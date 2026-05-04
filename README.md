@@ -1,4 +1,4 @@
-# Contrastive Self-Supervised Learning
+# Fault Diagnosis
 
 This repository implements a contrastive self-supervised learning framework using PyTorch. It allows for self-supervised pretraining of an encoder network followed by supervised fine-tuning for classification tasks.
 
@@ -72,7 +72,7 @@ train.bat
 
 ---
 
-## How to Run (SOTA Transformers & Q1 Publication Plan)
+## How to Run (SOTA Transformers)
 
 The following commands implement the **SOTA Transformers Q1 Publication** pipeline (see your Cursor plan for full methodology). Run them from **`src`** so that `configs/.env` and imports resolve correctly.
 
