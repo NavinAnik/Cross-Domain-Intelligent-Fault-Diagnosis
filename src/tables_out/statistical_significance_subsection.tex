@@ -1,0 +1,10 @@
+\subsection{Statistical Significance Analysis}
+
+Reporting mean performance alone does not establish whether observed differences between models are attributable to chance, particularly when evaluation is based on a limited number of cross-validation folds. We therefore conduct formal statistical validation to support claims of superiority over competing approaches.
+
+We employ the Wilcoxon signed-rank test, a non-parametric paired test that does not assume normally distributed fold-wise scores and is well suited to small sample sizes typical of $k$-fold cross-validation. Comparisons are conducted between the proposed contrastive self-supervised model and each major baseline (ResNet-50, ViT, EfficientNet, ConvNeXt, and AST) using fold-wise F1-scores collected from repeated 5-fold cross-validation ($n = 5 \times 2$ paired measurements per comparison). Statistical significance is assessed at $\alpha = 0.05$ (two-sided).
+
+Table~\ref{tab:wilcoxon} summarizes the results. The proposed model attains a mean F1 of 92.37\% $\pm$ 0.29\% across folds. All pairwise comparisons yielded $p < 0.05$, indicating that the proposed model achieves statistically significant improvements in F1-score over every competing baseline under repeated 5-fold cross-validation.
+
+\input{table_wilcoxon_significance.tex}
+

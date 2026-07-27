@@ -62,3 +62,71 @@ Under `results/spectrogram_fault/<run_id>/` (or your `--output_dir` + `run_id`):
 - `modules/spectrogram_augment.py` — time/freq mask, noise, etc.
 - `modules/evaluation.py` — `compute_classification_metrics`
 - `modules/visualization.py` — `plot_grad_cam_cnn`, `compute_grad_cam_cnn` (ViT path: `plot_grad_cam`)
+
+## CWRU reviewer-response validation suite
+
+Rigorous, leakage-aware evaluation for the Case Western Reserve University (CWRU) 12 kHz drive-end binary task (normal vs abnormal). Uses the same **ResNet50** architecture as `train_spectrogram_fault`; no model changes.
+
+### 1. Download and export (from repo root)
+
+```bash
+python scripts/download_cwru_mat.py --preset full_12k_de --out_dir data/cwru_mat
+
+cd src
+python -m experiments.export_cwru_spectrogram_images ^
+  --mat_dir ../data/cwru_mat --out_dir ../data/cwru_spectrograms_full_png
+```
+
+Export writes `normal/` / `abnormal/` PNGs plus **`manifest.csv`** (stem, load_hp, fault metadata per window).
+
+### 2. Full orchestrator (recommended)
+
+```bash
+python -m experiments.run_cwru_reviewer_response ^
+  --dataset_path ../data/cwru_spectrograms_full_png ^
+  --k 5 --epochs 25 --do_kfold --do_cross_load --do_gradcam_physics
+```
+
+Publication figures are copied to **`results/manuscript_figures/`** (cross-load heatmap, localization fidelity, fault-frequency overlays, Grad-CAM physics barplots, `manuscript_summary.md`).
+
+### Grad-CAM physics (standalone)
+
+```bash
+python -m experiments.evaluate_gradcam_physics ^
+  --dataset_path ../data/cwru_spectrograms_full_png ^
+  --mat_dir ../data/cwru_mat ^
+  --checkpoint results/cwru_reviewer_response/<run>/kfold/grouped/fold_0/best.pt
+```
+
+Outputs under `results/cwru_reviewer_response/<timestamp>/`:
+
+| Artifact | Purpose |
+|----------|---------|
+| `audit_report.md` | Protocol audit + live split verification |
+| `manuscript_text.md` | Auto-filled sentences for the paper |
+| `run_config.json` | Reproducibility config (seed, k, epochs) |
+| `kfold/` | Stratified + grouped K-fold CV (CSV, LaTeX, figures, checkpoints) |
+| `cross_load/` | Train/test across motor loads 1–3 HP |
+| `tables/`, `figures/` | Aggregated publication assets |
+
+### 3. Individual experiments
+
+```bash
+python -m experiments.run_cwru_kfold_cv --dataset_path ../data/cwru_spectrograms_full_png --cv_mode both --k 5 --epochs 25
+python -m experiments.run_cwru_cross_load --dataset_path ../data/cwru_spectrograms_full_png --epochs 25
+```
+
+- **`--cv_mode grouped`**: recording-wise `StratifiedGroupKFold` (leakage-free; primary evidence).
+- **`--cv_mode stratified`**: window-level split (legacy protocol; expect higher scores if leakage was present).
+- **`--init_checkpoint`**: optional warm-start from a MIMII or prior CWRU `best.pt`.
+
+### Code map (CWRU)
+
+- `modules/cwru_metadata.py` — official 12k DE stem → load / fault mapping
+- `modules/cwru_split_checks.py` — overlap, fold disjointness, load disjointness reports
+- `modules/cwru_experiment_utils.py` — shared dataset / training helpers
+- `utils/manuscript_io.py` — CSV + LaTeX tables, PNG + PDF figures
+- `experiments/run_cwru_kfold_cv.py`, `run_cwru_cross_load.py`, `run_cwru_reviewer_response.py`
+- `experiments/evaluate_gradcam_physics.py` — localization fidelity + BPFI/BPFO/BSF overlays
+- `modules/cwru_bearing_physics.py` — fault frequency table and mel-axis region masks
+

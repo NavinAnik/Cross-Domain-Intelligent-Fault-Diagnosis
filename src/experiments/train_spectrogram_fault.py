@@ -107,6 +107,198 @@ def _make_criterion(
 
 
 @torch.no_grad()
+def evaluate_with_loss(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    num_classes: int,
+    use_amp: bool,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    model.eval()
+    all_y: List[int] = []
+    all_pred: List[int] = []
+    all_prob: List[np.ndarray] = []
+    total_loss = 0.0
+    n_batches = 0
+    for x, y in loader:
+        x = x.to(device)
+        y_dev = y.to(device)
+        with torch.amp.autocast("cuda", enabled=device.type == "cuda" and use_amp):
+            logits = model(x)
+            loss = criterion(logits, y_dev)
+        prob = torch.softmax(logits.float(), dim=1).cpu().numpy()
+        pred = logits.argmax(dim=1).cpu().numpy()
+        all_y.extend(y.numpy().tolist())
+        all_pred.extend(pred.tolist())
+        all_prob.append(prob)
+        total_loss += loss.item()
+        n_batches += 1
+    if not all_prob:
+        empty = np.zeros((0, num_classes), dtype=np.float32)
+        return np.array([]), np.array([]), empty, 0.0
+    probs = np.vstack(all_prob)
+    avg_loss = total_loss / max(n_batches, 1)
+    return np.array(all_y), np.array(all_pred), probs, avg_loss
+
+
+def _loss_stabilized_epoch(val_losses: List[float], window: int = 3, rel_tol: float = 0.05) -> int:
+    """First epoch where trailing ``window`` val losses stay within ``rel_tol`` of running min."""
+    if not val_losses:
+        return 0
+    running_min = float("inf")
+    for i, v in enumerate(val_losses):
+        running_min = min(running_min, v)
+        if i + 1 >= window:
+            tail = val_losses[i + 1 - window : i + 1]
+            if all(t <= running_min * (1.0 + rel_tol) + 1e-8 for t in tail):
+                return i + 1 - window + 1
+    return len(val_losses)
+
+
+def train_and_validate(
+    model: nn.Module,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer,
+    scheduler: LinearWarmupCosineLR,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    args: argparse.Namespace,
+    out_dir: str,
+    num_classes: int,
+    *,
+    save_best: bool = True,
+    save_plots: bool = False,
+) -> Dict[str, Any]:
+    """
+    Run the training loop and return history, best checkpoint state, and final metrics.
+
+    Adds ``val_loss`` to history plus ``best_epoch`` and ``loss_stabilized_epoch`` in the result dict.
+    """
+    use_amp = args.amp and device.type == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
+    history: Dict[str, List[float]] = {
+        "train_loss": [],
+        "val_loss": [],
+        "val_bal_acc": [],
+        "val_precision": [],
+        "val_recall": [],
+        "val_f1": [],
+        "val_accuracy": [],
+    }
+    best_bal = -1.0
+    best_state: Optional[Dict[str, torch.Tensor]] = None
+    best_epoch = 0
+    patience_cnt = 0
+    t0 = time.time()
+    total_epochs = 0
+
+    for epoch in range(1, args.epochs + 1):
+        total_epochs = epoch
+        scheduler.step()
+        model.train()
+        total_loss = 0.0
+        n_batches = 0
+        for x, y in train_loader:
+            x, y = x.to(device), y.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                logits = model(x)
+                loss = criterion(logits, y)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+            total_loss += loss.item()
+            n_batches += 1
+
+        train_loss_epoch = total_loss / max(n_batches, 1)
+        y_t, y_p, y_pr, val_loss_epoch = evaluate_with_loss(
+            model, val_loader, criterion, device, num_classes, use_amp
+        )
+        bal_acc = balanced_accuracy_score(y_t, y_p) if len(y_t) else 0.0
+        acc = float((y_t == y_p).mean()) if len(y_t) else 0.0
+        if num_classes == 2 and len(y_t) > 0:
+            prec_log, rec_log, f1_log, _ = precision_recall_fscore_support(
+                y_t, y_p, average="binary", zero_division=0
+            )
+        else:
+            prec_log, rec_log, f1_log, _ = precision_recall_fscore_support(
+                y_t,
+                y_p,
+                average="macro",
+                zero_division=0,
+                labels=list(range(num_classes)),
+            )
+        history["train_loss"].append(train_loss_epoch)
+        history["val_loss"].append(float(val_loss_epoch))
+        history["val_bal_acc"].append(float(bal_acc))
+        history["val_precision"].append(float(prec_log))
+        history["val_recall"].append(float(rec_log))
+        history["val_f1"].append(float(f1_log))
+        history["val_accuracy"].append(acc)
+
+        logger.info(
+            "Epoch %d/%d | train_loss=%.4f | val_loss=%.4f | val_bal_acc=%.4f | val_precision=%.4f | val_recall=%.4f | val_f1=%.4f",
+            epoch,
+            args.epochs,
+            train_loss_epoch,
+            val_loss_epoch,
+            bal_acc,
+            prec_log,
+            rec_log,
+            f1_log,
+        )
+
+        if bal_acc > best_bal:
+            best_bal = bal_acc
+            best_epoch = epoch
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            patience_cnt = 0
+            if save_best:
+                os.makedirs(out_dir, exist_ok=True)
+                torch.save(
+                    {"model_state_dict": best_state, "epoch": epoch, "val_bal_acc": best_bal},
+                    os.path.join(out_dir, "best.pt"),
+                )
+        else:
+            patience_cnt += 1
+            if patience_cnt >= args.patience:
+                logger.info("Early stopping at epoch %d", epoch)
+                break
+
+    loss_stabilized_epoch = _loss_stabilized_epoch(history["val_loss"])
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    y_t, y_p, y_pr = evaluate_model(model, val_loader, device, num_classes, use_amp)
+    final_metrics = compute_classification_metrics(y_t, y_p, y_pr, n_classes=num_classes)
+    final_metrics["val_balanced_accuracy"] = float(balanced_accuracy_score(y_t, y_p))
+    final_metrics["train_time_sec"] = time.time() - t0
+
+    if save_plots:
+        labels_cm = list(range(num_classes))
+        save_confusion_matrix_fig(y_t, y_p, labels_cm, os.path.join(out_dir, "confusion_matrix.png"))
+        save_roc_curve(y_t, y_pr, num_classes, os.path.join(out_dir, "roc_curve.png"))
+        save_training_curves(history, os.path.join(out_dir, "training_curves.png"))
+        save_metric_curves(history, os.path.join(out_dir, "metric_curves.png"))
+
+    return {
+        "history": history,
+        "best_state": best_state,
+        "best_bal_acc": best_bal,
+        "best_epoch": best_epoch,
+        "loss_stabilized_epoch": loss_stabilized_epoch,
+        "total_epochs": total_epochs,
+        "final_metrics": final_metrics,
+    }
+
+
+@torch.no_grad()
 def evaluate_model(
     model: nn.Module,
     loader: DataLoader,
@@ -426,87 +618,31 @@ def train_one_run(args: argparse.Namespace) -> Dict[str, Any]:
     )
 
     use_amp = args.amp and device.type == "cuda"
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = os.path.join(args.output_dir, run_id)
     os.makedirs(out_dir, exist_ok=True)
 
-    history: Dict[str, List[float]] = {
-        "train_loss": [],
-        "val_bal_acc": [],
-        "val_precision": [],
-        "val_recall": [],
-        "val_f1": [],
-    }
-    best_bal = -1.0
-    best_state = None
-    patience_cnt = 0
-    t0 = time.time()
-
-    for epoch in range(1, args.epochs + 1):
-        scheduler.step()
-        model.train()
-        total_loss = 0.0
-        n_batches = 0
-        for x, y in train_loader:
-            x, y = x.to(device), y.to(device)
-            optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                logits = model(x)
-                loss = criterion(logits, y)
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-            scaler.step(optimizer)
-            scaler.update()
-            total_loss += loss.item()
-            n_batches += 1
-
-        train_loss_epoch = total_loss / max(n_batches, 1)
-        y_t, y_p, y_pr = evaluate_model(model, val_loader, device, num_classes, use_amp)
-        bal_acc = balanced_accuracy_score(y_t, y_p)
-        prec_macro, rec_macro, f1_macro, _ = precision_recall_fscore_support(
-            y_t,
-            y_p,
-            average="macro",
-            zero_division=0,
-            labels=list(range(num_classes)),
-        )
-        history["train_loss"].append(train_loss_epoch)
-        history["val_bal_acc"].append(float(bal_acc))
-        history["val_precision"].append(float(prec_macro))
-        history["val_recall"].append(float(rec_macro))
-        history["val_f1"].append(float(f1_macro))
-
-        logger.info(
-            "Epoch %d/%d | train_loss=%.4f | val_bal_acc=%.4f | val_precision=%.4f | val_recall=%.4f | val_f1=%.4f",
-            epoch, args.epochs, train_loss_epoch, bal_acc, prec_macro, rec_macro, f1_macro,
-        )
-
-        if bal_acc > best_bal:
-            best_bal = bal_acc
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            patience_cnt = 0
-            torch.save(
-                {"model_state_dict": best_state, "epoch": epoch, "val_bal_acc": best_bal},
-                os.path.join(out_dir, "best.pt"),
-            )
-        else:
-            patience_cnt += 1
-            if patience_cnt >= args.patience:
-                logger.info("Early stopping at epoch %d", epoch)
-                break
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
-
-    y_t, y_p, y_pr = evaluate_model(model, val_loader, device, num_classes, use_amp)
-    metrics = compute_classification_metrics(y_t, y_p, y_pr, n_classes=num_classes)
-    metrics["val_balanced_accuracy"] = float(balanced_accuracy_score(y_t, y_p))
-    metrics["train_time_sec"] = time.time() - t0
+    train_result = train_and_validate(
+        model,
+        criterion,
+        optimizer,
+        scheduler,
+        train_loader,
+        val_loader,
+        device,
+        args,
+        out_dir,
+        num_classes,
+        save_best=True,
+        save_plots=False,
+    )
+    history = train_result["history"]
+    best_bal = train_result["best_bal_acc"]
+    metrics = train_result["final_metrics"]
 
     labels_cm = list(range(num_classes))
+    y_t, y_p, y_pr = evaluate_model(model, val_loader, device, num_classes, use_amp)
     save_confusion_matrix_fig(y_t, y_p, labels_cm, os.path.join(out_dir, "confusion_matrix.png"))
     save_roc_curve(y_t, y_pr, num_classes, os.path.join(out_dir, "roc_curve.png"))
     save_training_curves(history, os.path.join(out_dir, "training_curves.png"))
