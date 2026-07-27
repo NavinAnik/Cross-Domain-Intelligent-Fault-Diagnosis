@@ -1,0 +1,136 @@
+{
+  "proposed_model": "Proposed",
+  "metric": "f1",
+  "n_folds": 5,
+  "n_repeats": 2,
+  "alpha": 0.05,
+  "proposed_mean_pct": 92.36909726244649,
+  "proposed_std_pct": 0.29048710450498233,
+  "fold_scores": {
+    "Proposed": [
+      0.925219,
+      0.925451,
+      0.927002,
+      0.927762,
+      0.920917,
+      0.918791,
+      0.924511,
+      0.922735,
+      0.923933,
+      0.920588
+    ],
+    "AST": [
+      0.901618,
+      0.901211,
+      0.898364,
+      0.902609,
+      0.89997,
+      0.894663,
+      0.899575,
+      0.894264,
+      0.901614,
+      0.8979
+    ],
+    "ConvNeXt": [
+      0.879261,
+      0.877276,
+      0.88489,
+      0.879382,
+      0.878287,
+      0.878591,
+      0.882129,
+      0.881462,
+      0.881651,
+      0.881723
+    ],
+    "EfficientNet": [
+      0.880567,
+      0.870374,
+      0.869951,
+      0.868745,
+      0.874464,
+      0.876516,
+      0.871544,
+      0.868639,
+      0.868702,
+      0.874602
+    ],
+    "ViT": [
+      0.862973,
+      0.862173,
+      0.857338,
+      0.860929,
+      0.860467,
+      0.860875,
+      0.863486,
+      0.860894,
+      0.862716,
+      0.86027
+    ],
+    "ResNet-50": [
+      0.846156,
+      0.847525,
+      0.839171,
+      0.843721,
+      0.843119,
+      0.842444,
+      0.843899,
+      0.85098,
+      0.841537,
+      0.848873
+    ]
+  },
+  "comparisons": [
+    {
+      "baseline": "AST",
+      "mean_pct": 89.91788285071058,
+      "std_pct": 0.28944279267825,
+      "pvalue": 0.001953125,
+      "statistic": 0.0,
+      "significant": true,
+      "cohens_d": 8.453471529406574,
+      "effect_size": "large"
+    },
+    {
+      "baseline": "ConvNeXt",
+      "mean_pct": 88.04652261762102,
+      "std_pct": 0.22944856952568704,
+      "pvalue": 0.001953125,
+      "statistic": 0.0,
+      "significant": true,
+      "cohens_d": 16.513936686273933,
+      "effect_size": "large"
+    },
+    {
+      "baseline": "EfficientNet",
+      "mean_pct": 87.24104705919915,
+      "std_pct": 0.4010439427966468,
+      "pvalue": 0.001953125,
+      "statistic": 0.0,
+      "significant": true,
+      "cohens_d": 14.645027982570493,
+      "effect_size": "large"
+    },
+    {
+      "baseline": "ViT",
+      "mean_pct": 86.12119805681759,
+      "std_pct": 0.17701217701784366,
+      "pvalue": 0.001953125,
+      "statistic": 0.0,
+      "significant": true,
+      "cohens_d": 25.9747979007888,
+      "effect_size": "large"
+    },
+    {
+      "baseline": "ResNet-50",
+      "mean_pct": 84.47426305538741,
+      "std_pct": 0.3600840109385388,
+      "pvalue": 0.001953125,
+      "statistic": 0.0,
+      "significant": true,
+      "cohens_d": 24.132773724299724,
+      "effect_size": "large"
+    }
+  ],
+  "note": "Illustrative per-fold values anchored on Table 1; replace with real CV outputs."
+}

@@ -11,6 +11,7 @@ Baseline files ``97.mat``–``100.mat`` are labeled **normal** (0); all other ``
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scipy.io import loadmat
+from modules.cwru_metadata import meta_for_stem
 
 logger = logging.getLogger(__name__)
 
@@ -122,19 +124,27 @@ def export_mat_file(
     n_mels: int,
     image_size: int,
     label_is_normal: bool,
-) -> int:
+) -> Tuple[int, List[Dict[str, Any]]]:
     mat = loadmat(str(mat_path), squeeze_me=False, struct_as_record=False)
     sig = pick_vibration_series(mat, channel=channel)
     n = sig.size
     if n < window:
         logger.warning("Skip %s: signal length %d < window %d", mat_path.name, n, window)
-        return 0
+        return 0, []
 
-    sub = "normal" if label_is_normal else "abnormal"
+    stem = re.sub(r"[^0-9a-zA-Z._-]+", "_", mat_path.stem)
+    meta = meta_for_stem(stem)
+    if meta is not None:
+        label = int(meta["label"])
+        sub = "normal" if label == 0 else "abnormal"
+    else:
+        label = 0 if label_is_normal else 1
+        sub = "normal" if label_is_normal else "abnormal"
+
     out_dir = out_root / sub
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    stem = re.sub(r"[^0-9a-zA-Z._-]+", "_", mat_path.stem)
+    rows: List[Dict[str, Any]] = []
     written = 0
     start = 0
     win_idx = 0
@@ -142,12 +152,29 @@ def export_mat_file(
         seg = sig[start : start + window]
         lm = log_mel_spectrogram(seg, sr=sample_rate, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels)
         rgb = mel_to_rgb_png(lm, image_size=image_size)
-        out_path = out_dir / f"{stem}_w{win_idx:06d}.png"
+        fname = f"{stem}_w{win_idx:06d}.png"
+        out_path = out_dir / fname
         rgb.save(out_path)
+        rel = os.path.join(sub, fname).replace("\\", "/")
+        row: Dict[str, Any] = {
+            "filepath": rel,
+            "stem": stem,
+            "label": label,
+            "load_hp": meta["load_hp"] if meta else "",
+            "rpm": meta["rpm"] if meta else "",
+            "fault_type": meta["fault_type"] if meta else ("normal" if label == 0 else "unknown"),
+            "diameter_in": meta.get("diameter_in") if meta else "",
+            "or_position": meta.get("or_position") if meta else "",
+            "channel": channel,
+            "sample_rate": sample_rate,
+            "window": window,
+            "hop": hop,
+        }
+        rows.append(row)
         written += 1
         win_idx += 1
         start += hop
-    return written
+    return written, rows
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -203,9 +230,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     }
 
     total = 0
+    manifest_rows: List[Dict[str, Any]] = []
     for mp in mats:
         is_normal = _is_baseline_mat(mp)
-        n = export_mat_file(
+        n, rows = export_mat_file(
             mp,
             out_root,
             channel=args.channel,
@@ -218,13 +246,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             image_size=int(args.image_size),
             label_is_normal=is_normal,
         )
+        manifest_rows.extend(rows)
         logger.info("%s -> %d windows (%s)", mp.name, n, "normal" if is_normal else "abnormal")
         total += n
 
     out_root.mkdir(parents=True, exist_ok=True)
+    manifest_path = out_root / "manifest.csv"
+    if manifest_rows:
+        fieldnames = list(manifest_rows[0].keys())
+        with open(manifest_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerows(manifest_rows)
+        meta["manifest_csv"] = str(manifest_path)
+        meta["n_manifest_rows"] = len(manifest_rows)
     with open(out_root / "export_meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-    logger.info("Wrote %d PNG windows under %s (metadata: export_meta.json)", total, out_root)
+    logger.info(
+        "Wrote %d PNG windows under %s (manifest.csv, export_meta.json)",
+        total,
+        out_root,
+    )
     return 0
 
 
