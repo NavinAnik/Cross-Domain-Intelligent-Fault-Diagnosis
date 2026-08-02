@@ -1,1 +1,0 @@
-{"normal_recall":0.9030594506895353,"_runtime":43047,"train_loss":3.0571643469104783,"mcc":0.37156659917760587,"balanced_accuracy":0.6764977151014898,"epoch":50,"val_accuracy":0.8194490384161036,"abnormal_recall":0.44993597951344433,"_timestamp":1.7728132420175521e+09,"_step":49,"_wandb":{"runtime":43047}}
