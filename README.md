@@ -1,32 +1,60 @@
-# Fault Diagnosis
+# Cross-Domain Intelligent Fault Diagnosis
 
-This repository implements a contrastive self-supervised learning framework using PyTorch. It allows for self-supervised pretraining of an encoder network followed by supervised fine-tuning for classification tasks.
+[![DOI](https://img.shields.io/badge/DOI-10.1038%2Fs41598--026--61771--5-blue)](https://doi.org/10.1038/s41598-026-61771-5)
+
+Official code for the paper published in **Scientific Reports** (2026):
+
+> **Cross-domain intelligent fault diagnosis with superlet spectrograms and a parameter-efficient CNN-Transformer hybrid**
+> S. M. Navin Nayer Anik, Md. Ehsanul Haque, Fahmid Al Farid, Mahe Zabin, Jia Uddin, Hezerul Bin Abdul Karim
+> *Scientific Reports* (2026). https://www.nature.com/articles/s41598-026-61771-5
+
+## 🧠 Method Overview
+
+Industrial acoustic monitoring is framed as supervised image classification on **superlet time-frequency spectrograms**.
+The model is a **CNN-Transformer hybrid**: an ImageNet-pretrained ResNet-50 backbone, a lightweight Transformer encoder over the spatial feature tokens, and **spatial attention gating**.
+An **Asymmetric Focal Contrastive Learning (AFCL)** objective handles severe class imbalance.
+Main evaluation is on **MIMII** under a group-aware (leakage-free) split; cross-domain transfer is evaluated on **CWRU** (zero-shot and fine-tuning).
+
+## 📊 Key Results (from the paper)
+
+| Setting | Metric | Value |
+|---|---|---|
+| MIMII | Accuracy | 94.82% |
+| MIMII | Balanced accuracy | 91.08% |
+| MIMII | F1-score | 91.72% |
+| MIMII | ROC-AUC | 0.9758 |
+| CWRU (zero-shot) | AUC | 0.8886 |
+| CWRU (fine-tuned, 3 epochs) | AUC | 1.0000 |
+| Efficiency | Params / FLOPs / latency | 25.6M / 4.1G / 4.5 ms per sample |
+
+## 🗺️ Paper → Code
+
+| Paper component | Code |
+|---|---|
+| CNN-Transformer hybrid, spatial attention | `src/modules/spectrogram_cnn_models.py` (`CNNTransformerHybrid`, `SpatialAttention2D`, `build_model`) |
+| AFCL loss | `src/modules/afcl_loss.py` (`AsymmetricFocalContrastiveLoss`, `create_afcl_loss`) |
+| Spectrogram training / evaluation | `src/experiments/train_spectrogram_fault.py`, `src/experiments/eval_spectrogram_checkpoint.py` |
+| Ablations & AFCL sensitivity | `src/experiments/run_spectrogram_ablation.py`, `src/experiments/run_afcl_sensitivity.py` |
+| Cross-validation & cross-domain | `src/experiments/run_cwru_kfold_cv.py`, `run_cwru_cross_load.py`, `run_mfpt_kfold_cv.py`, `run_mfpt_domain_adaptation.py` |
+| Statistical significance | `src/experiments/run_wilcoxon_significance.py` |
+| Grad-CAM / physics check | `src/experiments/evaluate_gradcam_physics.py` |
+| Efficiency (params, FLOPs, latency, ONNX, quantization, pruning) | `scripts/run_model_efficiency.py`, `scripts/analyze_model_complexity.py`, `scripts/benchmark_runtime.py` |
 
 ## 📁 Project Structure
 
 ```
-contrastive_self-supervised_learning-main/
-│
-├── main_pretrain.py            # Script for contrastive self-supervised pretraining
-├── main_finetune.py            # Script for supervised fine-tuning
-├── evaluate_models.py          # Evaluation script
-├── train.py                    # General training pipeline
-├── train.bat                   # Windows batch script for training
-├── requirements.txt            # Python dependencies
-├── encoder_pretrained.pth      # Pretrained encoder weights
-├── encoder_epoch_1.pth         # Encoder checkpoint
-├── model_epoch_1.pth           # Model checkpoint
-│
-├── modules/                    # Core model components
-│   ├── encoder.py              # Encoder architecture
-│   ├── classifier.py           # Classifier head
-│   ├── contrastive_loss.py     # Contrastive loss function
-│   ├── data_loader.py          # Data loading utilities
-│   └── evaluation.py           # Evaluation metrics
-│
-└── utils/                      # Utility functions
-    ├── plot_graph.py           # Graph plotting (e.g., loss curves)
-    └── utils.py                # Miscellaneous utilities
+Fault-Diagnosis/
+├── Dockerfile, docker-compose.yml
+├── scripts/            # Efficiency: complexity, runtime, ONNX export, FP16/INT8 quantization, pruning
+├── results/            # Generated plots and tables
+└── src/
+    ├── configs/.env    # Local config (create it; not committed)
+    ├── modules/        # Models (spectrogram CNNs, transformer encoders), losses (AFCL, focal, contrastive), data loaders
+    ├── fusion/         # Multimodal fusion (early, late, cross-attention, ConFu, ProMoBal, HTSF)
+    ├── experiments/    # Experiment runners (training, CV, ablations, cross-domain, figures, tables)
+    ├── training/       # Optimization helpers
+    ├── utils/          # Logging, tracking, plotting
+    └── main_*.py       # Standalone single-model scripts
 ```
 
 ## 🚀 Getting Started
@@ -35,46 +63,50 @@ contrastive_self-supervised_learning-main/
 
 **Run all commands from the `src` directory** (or set `PYTHONPATH` to include `src` when running from repo root).
 
-Create a virtual environment and install required packages:
-
 ```bash
 cd src
 pip install -r requirements.txt
 ```
 
-Optional: for transformer models only, you can use `pip install -r requirements_transformers.txt` instead of the full `requirements.txt`.
+Optional: for transformer models only, use `pip install -r requirements_transformers.txt` instead.
 
 ### 2. Configuration
 
 Create `src/configs/.env` with at least:
 
-- `DATASET_PATH` – path to your MIMII-style dataset (folder with `normal/` and `abnormal/` or machine-type subfolders)
-- Optional: `BATCH_SIZE`, `EPOCHS`, `LEARNING_RATE`, `NUM_CLASSES`, `USE_AMP`, `GRADIENT_ACCUMULATION_STEPS`, `USE_GRADIENT_CHECKPOINTING`
+- `DATASET_PATH` – path to your spectrogram / MIMII-style dataset
+- Optional: `DATASET_SUBDIR` (e.g. `0dB` for MIMII), `BATCH_SIZE`, `EPOCHS`, `LEARNING_RATE`, `NUM_CLASSES`, `USE_AMP`, `GRADIENT_ACCUMULATION_STEPS`, `USE_GRADIENT_CHECKPOINTING`
 
-Main scripts and experiment runners read this file. You can override paths from the command line (see below).
+Command-line flags override these values.
 
-### 3. Basic Pipeline (pretrain → finetune → evaluate)
+## 🔁 Reproducing the Paper
 
 ```bash
 cd src
-python main_pretrain.py
-python main_finetune.py
-python evaluate_models.py
+
+# Train the CNN-Transformer hybrid (ResNet-50 backbone) on spectrograms
+python -m experiments.train_spectrogram_fault --dataset_path $DATASET_PATH --model cnn_transformer --backbone resnet50
+
+# Ablations and AFCL sensitivity
+python -m experiments.run_spectrogram_ablation --dataset_path $DATASET_PATH
+python -m experiments.run_afcl_sensitivity --sweep all
+
+# CWRU: k-fold CV (window-level and leakage-free recording-level) and cross-load generalization
+python -m experiments.run_cwru_kfold_cv --dataset_path ../data/cwru_spectrograms_full_png --cv_mode both --k 5 --epochs 25
+python -m experiments.run_cwru_cross_load --dataset_path ../data/cwru_spectrograms_full_png --epochs 25
+
+# MFPT: k-fold CV
+python -m experiments.run_mfpt_kfold_cv --dataset_path ../data/mfpt_spectrograms --cv_mode both --k 5 --epochs 25
+
+# Efficiency report (params, FLOPs, latency)
+python ../scripts/run_model_efficiency.py --help
 ```
 
-Or on Windows, from repo root:
-
-```bat
-train.bat
-```
-
-(Ensure `train.bat` runs from a directory where `requirements.txt` and `main_pretrain.py` are found, or edit it to `cd src` first.)
+Use `--help` on any runner for the full option list.
 
 ---
 
-## How to Run (SOTA Transformers)
-
-The following commands implement the **SOTA Transformers Q1 Publication** pipeline (see your Cursor plan for full methodology). Run them from **`src`** so that `configs/.env` and imports resolve correctly.
+## Additional Experiments (transformer encoders and multimodal fusion)
 
 ### Single-model training (DINOv2, MAE, Swin, BEiT, DeiT, CLIP, AST)
 
@@ -177,21 +209,26 @@ python -m experiments.generate_publication_figures --demo
 - **Standalone model scripts (single-model training):**  
   `main_dinov2.py`, `main_mae.py`, `main_clip.py`, `main_ast.py` (run from `src`; they use `configs/.env` and `DATASET_PATH`).
 
-## 🧠 Method Overview
 
-The self-supervised phase trains an encoder using a contrastive loss function, encouraging the model to learn useful representations without labeled data. These representations are then fine-tuned using a classification head with labeled data.
+## 📝 Citation
 
-## 📊 Visualization
+If you use this code, please cite:
 
-The training process includes graph plotting utilities located in `utils/plot_graph.py`.
+> Anik, S.M.N.N., Haque, M.E., Al Farid, F. et al. Cross-domain intelligent fault diagnosis with superlet spectrograms and a parameter-efficient CNN-Transformer hybrid. *Sci Rep* (2026). https://doi.org/10.1038/s41598-026-61771-5
 
-## 📦 Checkpoints
+Received 30 April 2026 · Accepted 07 July 2026 · Published 13 July 2026
 
-Pretrained weights are included:
-- `encoder_pretrained.pth`
-- `encoder_epoch_1.pth`
-- `model_epoch_1.pth`
+```bibtex
+@article{anik2026crossdomain,
+  title   = {Cross-domain intelligent fault diagnosis with superlet spectrograms and a parameter-efficient CNN-Transformer hybrid},
+  author  = {Anik, S. M. Navin Nayer and Haque, Md. Ehsanul and Al Farid, Fahmid and Zabin, Mahe and Uddin, Jia and Karim, Hezerul Bin Abdul},
+  journal = {Scientific Reports},
+  year    = {2026},
+  doi     = {10.1038/s41598-026-61771-5},
+  url     = {https://www.nature.com/articles/s41598-026-61771-5}
+}
+```
 
 ## 📄 License
 
-MIT License (or replace with your actual license)
+This project is licensed under the [MIT License](LICENSE).
